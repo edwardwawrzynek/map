@@ -42,7 +42,12 @@ class TileSet {
             this.img.push([]);
             this.loaded.push([]);
             for (let y = this.y0; y < this.y1; y++) {
-                let im = old.getTile(zoom, x, y);
+                let im = null;
+                for (let t = 0; t < old.length; t++) {
+                    im = old[t].getTile(zoom, x, y);
+                    if (im != null)
+                        break;
+                }
                 let loaded = im != null;
                 if (loaded) {
                     this.img[this.img.length - 1].push(im);
@@ -52,6 +57,10 @@ class TileSet {
                     newIm.onload = function () {
                         this.loaded[x - this.x0][y - this.y0] = true;
                         onloadCallback();
+                    }.bind(this);
+                    newIm.onerror = function () {
+                        // image doesn't exist, but it is still finished loading
+                        this.loaded[x - this.x0][y - this.y0] = true;
                     }.bind(this);
                     newIm.src = formatTMSUrl(url, zoom, x, y);
                     this.img[this.img.length - 1].push(newIm);
@@ -67,6 +76,17 @@ class TileSet {
     getZoom() {
         return this.zoom;
     }
+    tileLoaded(x, y) {
+        const iX = x - this.x0;
+        const iY = y - this.y0;
+        if (iX < 0 || iY < 0 || x >= this.x1 || y >= this.y1) {
+            return false;
+        }
+        if (!this.loaded[iX][iY]) {
+            return false;
+        }
+        return true;
+    }
     // check if the set contains the given tile
     getTile(zoom, x, y) {
         if (zoom != this.zoom) {
@@ -74,16 +94,30 @@ class TileSet {
         }
         const iX = x - this.x0;
         const iY = y - this.y0;
-        if (iX < 0 || iY < 0 || x >= this.x1 || y >= this.y1) {
+        if (!this.tileLoaded(x, y)) {
             return null;
         }
-        if (!this.loaded[iX][iY]) {
+        if (this.img[iX][iY].height === 0) {
             return null;
         }
         return this.img[iX][iY];
     }
     getRange() {
         return [[this.x0, this.y0], [this.x1, this.y1]];
+    }
+    // check if the tile set is fully loaded over the given range
+    // zoom does not have to match this set's zoom
+    fullyLoaded(zoom, range) {
+        const [t0X, t0Y] = new TileCoordinate(zoom, range[0][0], range[0][1]).atZoom(this.zoom);
+        const [t1X, t1Y] = new TileCoordinate(zoom, range[1][0], range[1][1]).atZoom(this.zoom);
+        for (let x = Math.floor(t0X); x < Math.ceil(t1X); x++) {
+            for (let y = Math.floor(t0Y); y < Math.ceil(t1Y); y++) {
+                if (!this.tileLoaded(x, y)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 }
 class Viewport {
@@ -186,6 +220,7 @@ class Viewport {
         }
     }
 }
+const SCROLL_LOAD_DELAY = 350;
 class App {
     constructor(id, url, tileSize) {
         this.canvas = document.getElementById(id);
@@ -194,6 +229,7 @@ class App {
         this.height = this.canvas.height;
         this.mouseClicked = false;
         this.callbackId = null;
+        this.wheelCallbackId = null;
         this.canvas.addEventListener('mousedown', function (e) { this.mousedown(e); }.bind(this));
         this.canvas.addEventListener('mouseup', function (e) { this.mouseup(e); }.bind(this));
         this.canvas.addEventListener('mouseleave', function (e) { this.mouseup(e); }.bind(this));
@@ -202,7 +238,7 @@ class App {
         this.url = url;
         this.tileSize = tileSize;
         this.view = new Viewport(0.0, 0.0, 1.0, 1.0);
-        this.tiles = TileSet.empty();
+        this.tiles = [TileSet.empty()];
         this.loadTiles();
     }
     mousedown(e) {
@@ -224,17 +260,33 @@ class App {
         this.pMouseY = e.offsetY;
     }
     wheel(e) {
-        this.view.zoom(e.deltaY * 0.01, e.offsetX / this.width, e.offsetY / this.height);
-        this.loadTiles();
+        this.view.zoom(e.deltaY * 0.005, e.offsetX / this.width, e.offsetY / this.height);
+        // set tile loading to occur SCROLL_LOAD_DELAY after scrolling stops
+        if (this.wheelCallbackId != null) {
+            window.clearTimeout(this.wheelCallbackId);
+        }
+        this.wheelCallbackId = window.setTimeout(function () { this.loadTiles(); }.bind(this), SCROLL_LOAD_DELAY);
         this.run();
     }
     loadTiles() {
         const zoom = this.view.tileZoomLevel(this.width, this.height, this.tileSize);
-        this.tiles = new TileSet(zoom, this.view.neededTiles(zoom), this.tiles, this.url, function () {
+        const range = this.view.neededTiles(zoom);
+        // once we hit a tileset that fully covers the range of the image we want, we can remove all sets behind it
+        for (let i = 0; i < this.tiles.length; i++) {
+            if (this.tiles[i].fullyLoaded(zoom, range)) {
+                this.tiles.splice(i + 1, this.tiles.length - i - 1);
+            }
+        }
+        // limit to 4 old tilesets to draw
+        if (this.tiles.length > 4) {
+            this.tiles.splice(4, this.tiles.length - 4);
+        }
+        // add new tileset    
+        this.tiles.unshift(new TileSet(zoom, range, this.tiles.filter((t) => t.zoom == zoom), this.url, function () {
             if (this.callbackId == null) {
                 this.callbackId = window.requestAnimationFrame(function () { this.run(); }.bind(this));
             }
-        }.bind(this));
+        }.bind(this)));
     }
     resize(w, h) {
         this.width = w;
@@ -251,7 +303,9 @@ class App {
         this.ctx.fillStyle = "white";
         this.ctx.fillRect(0, 0, this.width, this.height);
         // draw tiles
-        this.view.draw(this.ctx, this.width, this.height, this.tiles);
+        for (let i = this.tiles.length - 1; i >= 0; i--) {
+            this.view.draw(this.ctx, this.width, this.height, this.tiles[i]);
+        }
     }
 }
 const URLS = [
@@ -271,7 +325,7 @@ function resizeApp() {
     app.resize(window.innerWidth, window.innerHeight);
 }
 window.onload = function () {
-    app = new App('canvas', URLS[1], 256);
+    app = new App('canvas', URLS[0], 256);
     resizeApp();
 };
 window.onresize = function () {
