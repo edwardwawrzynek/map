@@ -1,4 +1,4 @@
-const MAX_ZOOM = 22;
+const MAX_ZOOM = 16;
 // a tile coordinate -- a zoom level, x, and y
 // At zoom level 0, there is just the (0,0) tile
 // At zoom level 1, there are the (0,0), (0,1), (1,0), (1,1) tiles
@@ -19,6 +19,62 @@ class TileCoordinate {
         let factor = Math.pow(2.0, zoom - MAX_ZOOM);
         return [this.x * factor, this.y * factor];
     }
+    // Convert to latitude and longitude (using a spherical mercator projection)
+    toLonLat() {
+        const [x, y] = this.atZoom(0);
+        return [
+            (x - 0.5) * 360.0,
+            (360.0 / Math.PI * Math.atan(Math.exp(-2.0 * Math.PI * y + Math.PI))) - 90.0
+        ];
+    }
+    // Create a coordinate from latitude and longitude (using a spherical mercator projection)
+    static fromLonLat(lon, lat) {
+        const x = lon / 360.0 + 0.5;
+        const y = 0.5 * (1.0 - 1.0 / Math.PI * Math.log(Math.tan(Math.PI / 4 + (Math.PI / 180.0) * lat / 2.0)));
+        return new TileCoordinate(0, x, y);
+    }
+}
+// convert a decimal longitude/latiude to degrees, minutes, and seconds
+function decimalToDMS(decimal) {
+    const degree_sign = Math.sign(decimal);
+    decimal = Math.abs(decimal);
+    const degree = Math.floor(decimal);
+    const minute_float = (decimal - degree) * 60.0;
+    const minute = Math.floor(minute_float);
+    const second = (minute_float - minute) * 60.0;
+    return [degree * degree_sign, minute, second];
+}
+// convert a degrees, minutes, and seconds longitude/latitude to decimal
+function DMSToDecimal(degree, minute, seconds) {
+    return degree + minute / 60.0 + seconds / 3600.0;
+}
+function formatDMSComponents(degree, minute, seconds) {
+    // round seconds to 2 decimal places
+    seconds = Math.round(seconds * 100.0) / 100.0;
+    if (seconds >= 60.0) {
+        seconds -= 60.0;
+        minute += 1.0;
+    }
+    if (Math.abs(seconds) <= 0.01) {
+        return [`${String(degree).padStart(2, '0')}°`, `${String(minute).padStart(2, '0')}' `];
+    }
+    else if (seconds - Math.floor(seconds) <= 0.01) {
+        return [`${String(degree).padStart(2, '0')}°`, `${String(minute).padStart(2, '0')}' `, `${String(Math.floor(seconds)).padStart(2, '0')}"`];
+    }
+    else {
+        return [`${String(degree).padStart(2, '0')}°`, `${String(minute).padStart(2, '0')}' `, `${seconds.toFixed(2)}"`];
+    }
+}
+function formatDMS(degree, minute, seconds) {
+    return formatDMSComponents(degree, minute, seconds).join("");
+}
+function formatDegrees(degrees) {
+    const [d, m, s] = decimalToDMS(degrees);
+    return formatDMS(d, m, s);
+}
+function formatDegreesComponents(degrees) {
+    const [d, m, s] = decimalToDMS(degrees);
+    return formatDMSComponents(d, m, s);
 }
 // convert a endpoint format specifier to concrete url
 // zoom, x, and y parameters are expected to be formatted in the url as ${z} or {z}
@@ -183,7 +239,8 @@ class Viewport {
         width /= tileSize;
         height /= tileSize;
         let zoom = Math.max(Math.log2(width / sx), Math.log2(height / sy));
-        return Math.ceil(zoom);
+        zoom = Math.ceil(zoom);
+        return Math.min(zoom, MAX_ZOOM);
     }
     // return the range of tiles that need to be loaded to fully display this viewport at zoom
     // returns [topLeft, bottomRight] in zoom level tile coordinates (NOT zoom 0 coordinates)
@@ -197,8 +254,24 @@ class Viewport {
             [Math.ceil(t1X), Math.ceil(t1Y)]
         ];
     }
+    // draw an image on ctx at the given x, y and w, h, and only draw the part of that image within the subsection of the canvas (offX, offY, width, height)
+    drawImage(ctx, width, height, offX, offY, im, x, y, w, h) {
+        // left and top overflow into margin
+        const hX = Math.max(offX - x, 0);
+        const hY = Math.max(offY - y, 0);
+        // bottom and right overflow into margin
+        const lX = Math.max((x + w) - (offX + width), 0);
+        const lY = Math.max((y + h) - (offY + height), 0);
+        const sx = hX / w * im.width;
+        const sy = hY / h * im.height;
+        const cx = lX / w * im.width;
+        const cy = lY / h * im.height;
+        const sw = im.width - sx - cx;
+        const sh = im.height - sy - cy;
+        ctx.drawImage(im, sx, sy, sw, sh, Math.max(x, offX), Math.max(y, offY), w - hX - lX, h - hY - lY);
+    }
     // given a TileSet, draw those tiles as seen by this viewport on ctx
-    draw(ctx, width, height, tiles) {
+    draw(ctx, width, height, offX, offY, tiles) {
         const sx = this.x1 - this.x0;
         const sy = this.y1 - this.y0;
         const [[tX0, tY0], [tX1, tY1]] = tiles.getRange();
@@ -215,10 +288,14 @@ class Viewport {
                 const [nX, nY] = [(x - this.x0) / sx, (y - this.y0) / sy];
                 const scale = Math.pow(2.0, zoom);
                 const [nW, nH] = [width / (scale * sx), height / (scale * sy)];
-                ctx.drawImage(im, Math.floor(nX * width), Math.floor(nY * height), Math.ceil(nW), Math.ceil(nH));
+                this.drawImage(ctx, width, height, offX, offY, im, Math.floor(nX * width) + offX, Math.floor(nY * height) + offY, Math.ceil(nW), Math.ceil(nH));
             }
         }
     }
+}
+// modulo operator that returns positive results for negative operands
+function mod(n, m) {
+    return ((n % m) + m) % m;
 }
 const SCROLL_LOAD_DELAY = 350;
 class App {
@@ -235,6 +312,7 @@ class App {
         this.canvas.addEventListener('mouseleave', function (e) { this.mouseup(e); }.bind(this));
         this.canvas.addEventListener('mousemove', function (e) { this.mousemove(e); }.bind(this));
         this.canvas.addEventListener('wheel', function (e) { this.wheel(e); }.bind(this));
+        this.margin = [[40, 40], [30, 80]];
         this.url = url;
         this.tileSize = tileSize;
         this.view = new Viewport(0.0, 0.0, 1.0, 1.0);
@@ -249,18 +327,32 @@ class App {
     mouseup(e) {
         this.mouseClicked = false;
     }
+    mousePos(x, y) {
+        return [
+            (x - this.margin[0][0]) / (this.width - this.margin[0][0] - this.margin[0][1]),
+            (y - this.margin[1][0]) / (this.height - this.margin[1][0] - this.margin[1][1]),
+        ];
+    }
+    viewSize() {
+        return [
+            (this.width - this.margin[0][0] - this.margin[0][1]),
+            (this.height - this.margin[1][0] - this.margin[1][1])
+        ];
+    }
     mousemove(e) {
         if (!this.mouseClicked) {
             return;
         }
-        this.view.pan(-(e.offsetX - this.pMouseX) / this.width, -(e.offsetY - this.pMouseY) / this.height);
+        const [w, h] = this.viewSize();
+        this.view.pan(-(e.offsetX - this.pMouseX) / w, -(e.offsetY - this.pMouseY) / h);
         this.loadTiles();
         this.run();
         this.pMouseX = e.offsetX;
         this.pMouseY = e.offsetY;
     }
     wheel(e) {
-        this.view.zoom(e.deltaY * 0.005, e.offsetX / this.width, e.offsetY / this.height);
+        const [x, y] = this.mousePos(e.offsetX, e.offsetY);
+        this.view.zoom(e.deltaY * 0.005, x, y);
         // set tile loading to occur SCROLL_LOAD_DELAY after scrolling stops
         if (this.wheelCallbackId != null) {
             window.clearTimeout(this.wheelCallbackId);
@@ -297,15 +389,119 @@ class App {
         this.loadTiles();
         this.run();
     }
+    // pick longitude and latitude line distance (in degrees)
+    lonLatInterval(sizePixels, degreeRange) {
+        if (degreeRange < 10.0) {
+            // TODO: pick nice, whole number degrees / minutes / seconds
+            return DMSToDecimal(0, 1, 30);
+        }
+        else {
+            return DMSToDecimal(1, 0, 0);
+        }
+    }
+    // return degree values to draw longitude/latitude indicators at
+    lonLatIndicatorLocs(sizePixels, lowDegrees, highDegrees) {
+        const interval = this.lonLatInterval(sizePixels, Math.abs(highDegrees - lowDegrees));
+        let res = [];
+        const start = lowDegrees + interval - mod(lowDegrees, interval);
+        const end = highDegrees - highDegrees % interval;
+        for (let i = start; i <= end; i += interval) {
+            res.push(i);
+        }
+        return res;
+    }
+    xTileToCanvasPos(x) {
+        const normal = (x - this.view.x0) / (this.view.x1 - this.view.x0);
+        return Math.floor(this.margin[0][0] + normal * this.viewSize()[0]);
+    }
+    yTileToCanvasPos(y) {
+        const normal = (y - this.view.y0) / (this.view.y1 - this.view.y0);
+        return Math.floor(this.margin[1][0] + normal * this.viewSize()[1]);
+    }
+    // draw longitude and latitude indicators
+    drawLonLatLines() {
+        const [sx, sy] = this.viewSize();
+        // draw border
+        let thickness = 0.5;
+        this.ctx.strokeStyle = "#000000";
+        this.ctx.lineWidth = 2 * thickness;
+        this.ctx.strokeRect(this.margin[0][0] - thickness, this.margin[1][0] - thickness, sx + 2 * thickness, sy + 2 * thickness);
+        // get longitude / latitudes to draw
+        const [lon0, lat0] = new TileCoordinate(0, this.view.x0, this.view.y1).toLonLat();
+        const [lon1, lat1] = new TileCoordinate(0, this.view.x1, this.view.y0).toLonLat();
+        const lonIndicators = this.lonLatIndicatorLocs(sy, lon0, lon1);
+        const latIndicators = this.lonLatIndicatorLocs(sx, lat0, lat1);
+        let lineLen = 20;
+        let lineOverhang = 5;
+        thickness = 1;
+        this.ctx.lineWidth = 2 * thickness;
+        this.ctx.font = "15px sans-serif";
+        this.ctx.fillStyle = "#000000";
+        // draw longitude marks
+        for (let i = 0; i < lonIndicators.length; i++) {
+            const lon = lonIndicators[i];
+            let x = TileCoordinate.fromLonLat(lon, 0.0).atZoom(0)[0];
+            x = this.xTileToCanvasPos(x);
+            if (x - this.margin[0][0] < lineLen || this.margin[0][0] + this.viewSize()[0] - x < lineLen) {
+                continue;
+            }
+            this.ctx.beginPath();
+            this.ctx.moveTo(x - thickness, this.margin[1][0] - lineOverhang);
+            this.ctx.lineTo(x - thickness, this.margin[1][0] + lineLen);
+            this.ctx.stroke();
+            this.ctx.beginPath();
+            this.ctx.moveTo(x - thickness, this.margin[1][0] + this.viewSize()[1] + lineOverhang);
+            this.ctx.lineTo(x - thickness, this.margin[1][0] + this.viewSize()[1] - lineLen);
+            this.ctx.stroke();
+            // write out coordinates
+            this.ctx.textAlign = "center";
+            this.ctx.textBaseline = "bottom";
+            this.ctx.fillText(formatDegrees(lon), x, this.margin[1][0] - lineOverhang);
+            this.ctx.textBaseline = "top";
+            this.ctx.fillText(formatDegrees(lon), x, this.margin[1][0] + this.viewSize()[1] + lineOverhang);
+        }
+        // draw latitude marks
+        for (let i = 0; i < latIndicators.length; i++) {
+            const lat = latIndicators[i];
+            let y = TileCoordinate.fromLonLat(0.0, lat).atZoom(0)[1];
+            y = this.yTileToCanvasPos(y);
+            if (y - this.margin[1][0] < lineLen || this.margin[1][0] + this.viewSize()[1] - y < lineLen) {
+                continue;
+            }
+            this.ctx.beginPath();
+            this.ctx.moveTo(this.margin[0][0] - lineOverhang, y - thickness);
+            this.ctx.lineTo(this.margin[0][0] + lineLen, y - thickness);
+            this.ctx.stroke();
+            this.ctx.beginPath();
+            this.ctx.moveTo(this.margin[0][0] + this.viewSize()[0] + lineOverhang, y - thickness);
+            this.ctx.lineTo(this.margin[0][0] + this.viewSize()[0] - lineLen, y - thickness);
+            this.ctx.stroke();
+            // write out coordinates
+            let writeLines = (lines, x, y) => {
+                let interval = 17;
+                let offset = -(lines.length / 2) + 0.5;
+                for (let i = 0; i < lines.length; i++) {
+                    this.ctx.fillText(lines[i], x, y + (i + offset) * interval);
+                }
+            };
+            this.ctx.textBaseline = "middle";
+            this.ctx.textAlign = "right";
+            writeLines(formatDegreesComponents(lat), this.margin[0][0] - lineOverhang, y);
+            this.ctx.textAlign = "left";
+            writeLines(formatDegreesComponents(lat), this.margin[0][0] + this.viewSize()[0] + lineOverhang, y);
+        }
+    }
     run() {
         this.callbackId = null;
         // clear canvas
-        this.ctx.fillStyle = "white";
+        this.ctx.fillStyle = "#ffffff";
         this.ctx.fillRect(0, 0, this.width, this.height);
+        const [w, h] = this.viewSize();
         // draw tiles
         for (let i = this.tiles.length - 1; i >= 0; i--) {
-            this.view.draw(this.ctx, this.width, this.height, this.tiles[i]);
+            this.view.draw(this.ctx, w, h, this.margin[0][0], this.margin[1][0], this.tiles[i]);
         }
+        this.drawLonLatLines();
     }
 }
 const URLS = [
@@ -325,7 +521,7 @@ function resizeApp() {
     app.resize(window.innerWidth, window.innerHeight);
 }
 window.onload = function () {
-    app = new App('canvas', URLS[0], 256);
+    app = new App('canvas', URLS[6], 256);
     resizeApp();
 };
 window.onresize = function () {
