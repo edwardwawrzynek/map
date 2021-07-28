@@ -34,6 +34,15 @@ class TileCoordinate {
     ];
   }
 
+  // calculate the scale at this coordinate
+  // returns the horizontal size, in miles, of a 1x1 zoom 0 tile at the coordinate
+  scale(): number {
+    const [lon, lat] = this.toLonLat();
+    const latSize = Math.cos(lat * Math.PI / 180.0);
+    // Earth radius: 3959 mi
+    return 3959.0 * 2.0 * Math.PI * latSize;
+  }
+
   // Create a coordinate from latitude and longitude (using a spherical mercator projection)
   static fromLonLat(lon: number, lat: number): TileCoordinate {
     const x = lon / 360.0 + 0.5;
@@ -97,6 +106,12 @@ function formatTMSUrl(format: string, z: number, x: number, y: number) {
   return (format
     .replace("${z}", z.toString()).replace("${x}", x.toString()).replace("${y}", y.toString())
     .replace("{z}",  z.toString()).replace("{x}",  x.toString()).replace("{y}",  y.toString()));
+}
+
+// get magnetic declination for a given location
+// (uses NOAA NCEI api)
+function getDeclination(lon: number, lat: number, callback: (decl: number) => void) {
+  fetch(`https://www.ngdc.noaa.gov/geomag-web/calculators/calculateDeclination?lat1=${lat}&lon1=${lon}&resultFormat=json`).then(res => res.json()).then(data => callback(data.result[0].declination));
 }
 
 // a set of loaded tile images that can be drawn
@@ -231,6 +246,12 @@ class Viewport {
     this.y1 = y1;
   }
 
+  // get the width of the viewport in miles
+  widthMiles(): number {
+    const tileScale = new TileCoordinate(0, (this.x0 + this.x1) / 2, (this.y0 + this.y1) / 2).scale();
+    return tileScale * (this.x1 - this.x0);
+  }
+
   // move the viewport in the (dX, dY) direction
   // dX and dY are in the [0, 1] range, and the map moves proportionally to its current scale
   pan(dX: number, dY: number) {
@@ -361,6 +382,54 @@ class Viewport {
       }
     }
   }
+
+  // get coordinates of the center of the viewport
+  centerLonLat(): [number, number] {
+    return new TileCoordinate(0, (this.x0 + this.x1) / 2, (this.y0 + this.y1) / 2).toLonLat();
+  }
+}
+
+// a group of overlapping TileSets of the same area at different zoom levels
+// this allows the app to use old tiles to draw the current view while newer tiles are still loading
+class TileSetBuffer {
+  tiles: TileSet[];
+  url: string;
+  loadCallback: () => void;
+
+  constructor(url: string, loadCallback: () => void) {
+    this.tiles = [TileSet.empty()];
+    this.url = url;
+    this.loadCallback = loadCallback;
+  }
+
+  getTiles() {
+    return this.tiles;
+  }
+
+  // load a new TileSet for view at zoom, and discard any old TileSets no longer needed
+  loadNew(view: Viewport, zoom: number) {
+    const range = view.neededTiles(zoom);
+    // once we hit a tileset that fully covers the range of the image we want, we can remove all sets behind it
+    for(let i = 0; i < this.tiles.length; i++) {
+      if(this.tiles[i].fullyLoaded(zoom, range)) {
+        this.tiles.splice(i + 1, this.tiles.length - i - 1);
+      }
+    }
+    // limit to 4 old tilesets
+    if(this.tiles.length > 4) {
+      this.tiles.splice(4, this.tiles.length - 4);
+    }
+
+    // add new tileset    
+    this.tiles.unshift(new TileSet(zoom, range, this.tiles.filter((t) => t.zoom == zoom), this.url, this.loadCallback));
+  }
+
+  // draw the tilesets
+  draw(ctx: CanvasRenderingContext2D, view: Viewport, width: number, height: number, offX: number, offY: number) {
+    for(let i = this.tiles.length - 1; i >= 0; i--) {
+      view.draw(ctx, width, height, offX, offY, this.tiles[i]);
+    }
+  }
 }
 
 // modulo operator that returns positive results for negative operands
@@ -370,6 +439,18 @@ function mod(n, m) {
 
 const SCROLL_LOAD_DELAY = 350;
 
+interface MapLayer {
+  url: string;
+  opacity: number;
+  tileSize: number;
+}
+
+type MapLayerTiles = MapLayer & {
+  tiles: TileSetBuffer;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+}
+
 class App {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -377,10 +458,11 @@ class App {
   height: number;
   
   view: Viewport;
-  tiles: TileSet[];
-
-  url: string;
-  tileSize: number;
+  declination: number;
+  declinationGetCallbackId: number;
+  
+  // maps to display
+  layers: MapLayerTiles[];
 
   // main boundary/margin size (pixels)
   margin: [[number, number], [number, number]];
@@ -395,7 +477,7 @@ class App {
 
   callbackId: number | null;
 
-  constructor(id: string, url: string, tileSize: number) {
+  constructor(id: string, layers: MapLayer[]) {
     this.canvas = document.getElementById(id) as HTMLCanvasElement;
     this.ctx = this.canvas.getContext('2d');
     this.width = this.canvas.width;
@@ -412,10 +494,32 @@ class App {
 
     this.margin = [[40, 40], [30, 80]];
 
-    this.url = url;
-    this.tileSize = tileSize;
     this.view = new Viewport(0.0, 0.0, 1.0, 1.0);
-    this.tiles = [TileSet.empty()];
+    this.declination = 0.0;
+    this.declinationGetCallbackId = null;
+    this.setLayers(layers);
+  }
+
+  setLayers(layers: MapLayer[]) {
+    this.layers = layers.map((layer) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = this.viewSize()[0];
+      canvas.height = this.viewSize()[1];
+      return {
+        ...layer,
+        canvas,
+        ctx: canvas.getContext("2d"),
+        tiles: new TileSetBuffer(
+          layer.url, 
+          function() {
+            if(this.callbackId == null) { 
+              this.callbackId = window.requestAnimationFrame(function() { this.run(); }.bind(this));
+            }
+          }.bind(this)
+        )
+      };
+    });
+
     this.loadTiles();
   }
 
@@ -470,26 +574,19 @@ class App {
   }
 
   private loadTiles() {
-    const zoom = this.view.tileZoomLevel(this.width, this.height, this.tileSize);
-    const range = this.view.neededTiles(zoom);
-    // once we hit a tileset that fully covers the range of the image we want, we can remove all sets behind it
-    for(let i = 0; i < this.tiles.length; i++) {
-      if(this.tiles[i].fullyLoaded(zoom, range)) {
-        this.tiles.splice(i + 1, this.tiles.length - i - 1);
-      }
+    for(let l = 0; l < this.layers.length; l++) {
+      const zoom = this.view.tileZoomLevel(this.viewSize()[0], this.viewSize()[1], this.layers[l].tileSize);
+      this.layers[l].tiles.loadNew(this.view, zoom);
     }
-    // limit to 4 old tilesets to draw
-    if(this.tiles.length > 4) {
-      this.tiles.splice(4, this.tiles.length - 4);
+    if(this.declinationGetCallbackId !== null) {
+      window.clearTimeout(this.declinationGetCallbackId);
     }
-
-    // add new tileset    
-    this.tiles.unshift(new TileSet(zoom, range, this.tiles.filter((t) => t.zoom == zoom), this.url, 
-    function() { 
-      if(this.callbackId == null) { 
-        this.callbackId = window.requestAnimationFrame(function() { this.run(); }.bind(this));
-      }}.bind(this)
-    ));
+    this.declinationGetCallbackId = window.setTimeout(() => {
+      getDeclination(this.view.centerLonLat()[0], this.view.centerLonLat()[1], (decl) => {
+        this.declination = decl;
+        this.run();
+      })
+    }, SCROLL_LOAD_DELAY);
   }
 
   resize(w: number, h: number) {
@@ -498,6 +595,10 @@ class App {
     this.canvas.width = w;
     this.canvas.height = h;
     this.view.matchAspect(this.width, this.height);
+    for(let l = 0; l < this.layers.length; l++) {
+      this.layers[l].canvas.width = this.viewSize()[0];
+      this.layers[l].canvas.height = this.viewSize()[1];
+    }
 
     this.loadTiles();
     this.run();
@@ -505,12 +606,10 @@ class App {
 
   // pick longitude and latitude line distance (in degrees)
   private lonLatInterval(sizePixels: number, degreeRange: number): number {
-    if(degreeRange < 10.0) {
-    // TODO: pick nice, whole number degrees / minutes / seconds
-    return DMSToDecimal(0, 1, 30);
-    } else {
-      return DMSToDecimal(1, 0, 0);
-    }
+    const maxNum = Math.floor(sizePixels / 140.0);
+    const dist = degreeRange / maxNum;
+    const [d, m, s] = decimalToDMS(dist);
+    return DMSToDecimal(Math.round(d), Math.round(m), Math.round(s));
   }
 
   // return degree values to draw longitude/latitude indicators at
@@ -550,14 +649,14 @@ class App {
     // get longitude / latitudes to draw
     const [lon0, lat0] = new TileCoordinate(0, this.view.x0, this.view.y1).toLonLat();
     const [lon1, lat1] = new TileCoordinate(0, this.view.x1, this.view.y0).toLonLat();
-    const lonIndicators = this.lonLatIndicatorLocs(sy, lon0, lon1);
-    const latIndicators = this.lonLatIndicatorLocs(sx, lat0, lat1);
+    const lonIndicators = this.lonLatIndicatorLocs(sx, lon0, lon1);
+    const latIndicators = this.lonLatIndicatorLocs(sy, lat0, lat1);
 
     let lineLen = 20;
     let lineOverhang = 5;
     thickness = 1;
     this.ctx.lineWidth = 2 * thickness;
-    this.ctx.font = "15px sans-serif";
+    this.ctx.font = "14px sans-serif";
     this.ctx.fillStyle = "#000000";
 
     // draw longitude marks
@@ -584,7 +683,7 @@ class App {
       this.ctx.textBaseline = "bottom";
       this.ctx.fillText(formatDegrees(lon), x, this.margin[1][0] - lineOverhang);
       this.ctx.textBaseline = "top";
-      this.ctx.fillText(formatDegrees(lon), x, this.margin[1][0] + this.viewSize()[1] + lineOverhang);
+      this.ctx.fillText(formatDegrees(lon), x, this.margin[1][0] + this.viewSize()[1] + lineOverhang + 2);
     }
 
     // draw latitude marks
@@ -618,22 +717,127 @@ class App {
       this.ctx.textAlign = "right";
       writeLines(formatDegreesComponents(lat), this.margin[0][0] - lineOverhang, y);
       this.ctx.textAlign = "left";
-      writeLines(formatDegreesComponents(lat), this.margin[0][0] + this.viewSize()[0] + lineOverhang, y);
+      writeLines(formatDegreesComponents(lat), this.margin[0][0] + this.viewSize()[0] + lineOverhang + 2, y);
     }
+  }
+
+  private drawScale(offX: number, offY: number, width: number, widthSize: number, unit: string, firstIntervalDivisions: number) {
+    let numIntervals = Math.floor(width / 120.0);
+    numIntervals = numIntervals >= 1 ? numIntervals : 1;
+    // pick interval (nearest multiple of 0.5)
+    let interval = Math.floor(widthSize / numIntervals * 2.0) / 2.0;
+    // use nearest interval of 0.1 if 0.5 was too large
+    interval = interval > 0 ? interval : Math.floor(widthSize / numIntervals * 10.0) / 10.0;
+    // if 0.1 was too large, just use real interval
+    interval = interval > 0 ? interval : widthSize / numIntervals;
+    const intervalWidth = interval / widthSize * width;
+
+    const textHeight = 15;
+    const blockHeight = 5;
+    // draw blocks
+    this.ctx.lineWidth = 1.0;
+    this.ctx.strokeRect(offX - 0.5, offY + textHeight - 0.5, intervalWidth * numIntervals + 1.0, blockHeight + 1.0);
+    // draw first block
+    for(let i = 0; i < firstIntervalDivisions; i++) {
+      const off = (i / firstIntervalDivisions) * intervalWidth;
+      this.ctx.fillStyle = i % 2 == 0 ? "#000000" : "#ffffff";
+      this.ctx.fillRect(offX + off, offY + textHeight, intervalWidth / firstIntervalDivisions, blockHeight);
+    }
+    // draw normal blocks
+    for(let i = 1; i < numIntervals; i++) {
+      this.ctx.fillStyle = i % 2 == 0 ? "#ffffff" : "#000000";
+      this.ctx.fillRect(offX + i * intervalWidth, offY + textHeight, intervalWidth, blockHeight);
+    }
+    // draw labels
+    this.ctx.font = "14px sans-serif";
+    this.ctx.fillStyle = "#000000";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "bottom";
+    for(let i = 0; i <= numIntervals; i++) {
+      let label = (Math.round(i * interval * 10.0) / 10.0).toString();
+      if(i == numIntervals) {
+        label += unit;
+      }
+      this.ctx.fillText(label, offX + i * intervalWidth, offY + textHeight, intervalWidth); 
+    }
+  }
+
+  private drawMapScales() {
+    const [w, h] = this.viewSize();
+    const sizeMi = this.view.widthMiles();
+    const sizeKm = sizeMi * 1.609344;
+
+    const barWidth = (w - 100) / w;
+    this.drawScale(this.margin[0][0], this.margin[1][0] + h + 25, w * barWidth, sizeMi * barWidth, "mi", 4);
+    this.drawScale(this.margin[0][0], this.margin[1][0] + h + 50, w * barWidth, sizeKm * barWidth, "km", 10);
+  }
+
+  private drawMapDeclination(offX: number, offY: number) {
+    const [w, h] = this.viewSize();
+    const declWidth = 80;
+    const northHeight = 35;
+    const lineHeight = 25;
+
+    // true north
+    const [northX, northY] = [offX + declWidth / 2 - 0.5, offY];
+    // magnetic north
+    const angle = this.declination * Math.PI / 180.0;
+    const [mNorthX, mNorthY] = [offX + declWidth / 2 - 0.5 + lineHeight * Math.sin(angle), offY + northHeight - lineHeight *  Math.cos(angle)];
+
+    // draw true north
+    this.ctx.strokeStyle = "#000000";
+    this.ctx.lineWidth = 1.0;
+    this.ctx.beginPath();
+    this.ctx.moveTo(offX + declWidth / 2 - 0.5, offY + northHeight);
+    this.ctx.lineTo(northX, northY);
+    this.ctx.stroke();
+
+    this.ctx.fillStyle = "#000000";
+    this.ctx.font = "12px sans-serif";
+    this.ctx.textBaseline = "bottom";
+    this.ctx.textAlign = "center";
+    this.ctx.fillText("N", northX, northY);
+
+    // draw magnetic north
+    this.ctx.beginPath();
+    this.ctx.moveTo(offX + declWidth / 2 - 0.5, offY + northHeight);
+    this.ctx.lineTo(mNorthX, mNorthY);
+    this.ctx.stroke();
+    if(angle > 0) {
+      this.ctx.textAlign = "left";
+    } else {
+      this.ctx.textAlign = "right";
+    }
+    this.ctx.fillText("MN", mNorthX, mNorthY);
+
+    this.ctx.font = "14px sans-serif";
+    this.ctx.textAlign = "left";
+    this.ctx.textBaseline = "bottom";
+    this.ctx.fillText(`${this.declination.toFixed(1)}°`, offX + declWidth / 2 + 5, offY + northHeight);
   }
 
   run() {
     this.callbackId = null;
     // clear canvas
-    this.ctx.fillStyle = "#ffffff";
-    this.ctx.fillRect(0, 0, this.width, this.height);
+    this.ctx.globalAlpha = 1.0;
+    this.ctx.clearRect(0, 0, this.width, this.height);
     const [w, h] = this.viewSize();
-    // draw tiles
-    for(let i = this.tiles.length - 1; i >= 0; i--) {
-      this.view.draw(this.ctx, w, h, this.margin[0][0], this.margin[1][0], this.tiles[i]);
+    // draw layers
+    for(let l = 0; l < this.layers.length; l++) {
+      // clear off screen canvas
+      this.layers[l].ctx.clearRect(0, 0, w, h);
+      // draw to off screen canvas
+      this.layers[l].tiles.draw(this.layers[l].ctx, this.view, w, h, 0, 0);
+      // draw offscreen canvas to main canvas with transparency
+      this.ctx.globalAlpha = this.layers[l].opacity;
+      this.ctx.drawImage(this.layers[l].canvas, this.margin[0][0], this.margin[1][0]);
     }
 
+    this.ctx.globalAlpha = 1.0;
+
     this.drawLonLatLines();
+    this.drawMapScales();
+    this.drawMapDeclination(this.margin[0][0] + w - 80, this.margin[1][0] + h + 40);
   }
 }
 
@@ -658,7 +862,11 @@ function resizeApp() {
 }
 
 window.onload = function() {
-  app = new App('canvas', URLS[6], 256);
+  app = new App('canvas', [
+    { url: URLS[0], tileSize: 256, opacity: 1.0 },
+    { url: URLS[6], tileSize: 256, opacity: 1.0 },
+    { url: URLS[5], tileSize: 256, opacity: 0.15 },
+  ]);
   resizeApp();
 };
 
