@@ -5,7 +5,7 @@ const MAX_ZOOM = 16;
 // At zoom level 1, there are the (0,0), (0,1), (1,0), (1,1) tiles
 // A tile coordinate can be expressed in any zoom level
 // for example, the zoom 1 (0, 1) tile is (0, 0.5) at zoom 0
-export class TileCoordinate {
+class TileCoordinate {
   // represent tiles at MAX_ZOOM (to mostly storing floating point coordinates)
   x: number;
   y: number;
@@ -53,7 +53,7 @@ export class TileCoordinate {
 }
 
 // convert a decimal longitude/latiude to degrees, minutes, and seconds
-export function decimalToDMS(decimal: number): [number, number, number] {
+function decimalToDMS(decimal: number): [number, number, number] {
   const degree_sign = Math.sign(decimal);
   decimal = Math.abs(decimal);
   const degree = Math.floor(decimal);
@@ -65,11 +65,11 @@ export function decimalToDMS(decimal: number): [number, number, number] {
 }
 
 // convert a degrees, minutes, and seconds longitude/latitude to decimal
-export function DMSToDecimal(degree: number, minute: number, seconds: number): number {
+function DMSToDecimal(degree: number, minute: number, seconds: number): number {
   return degree + minute / 60.0 + seconds / 3600.0;
 }
 
-export function formatDMSComponents(degree: number, minute: number, seconds: number): string[] {
+function formatDMSComponents(degree: number, minute: number, seconds: number): string[] {
   // round seconds to 2 decimal places
   seconds = Math.round(seconds * 100.0) / 100.0;
   if(seconds >= 60.0) {
@@ -86,23 +86,23 @@ export function formatDMSComponents(degree: number, minute: number, seconds: num
   }
 }
 
-export function formatDMS(degree: number, minute: number, seconds: number): string {
+function formatDMS(degree: number, minute: number, seconds: number): string {
   return formatDMSComponents(degree, minute, seconds).join("");
 }
 
-export function formatDegrees(degrees: number): string {
+function formatDegrees(degrees: number): string {
   const [d, m, s] = decimalToDMS(degrees);
   return formatDMS(d, m, s);
 }
 
-export function formatDegreesComponents(degrees: number): string[] {
+function formatDegreesComponents(degrees: number): string[] {
   const [d, m, s] = decimalToDMS(degrees);
   return formatDMSComponents(d, m, s);
 }
 
 // convert a endpoint format specifier to concrete url
 // zoom, x, and y parameters are expected to be formatted in the url as ${z} or {z}
-export function formatTMSUrl(format: string, z: number, x: number, y: number) {
+function formatTMSUrl(format: string, z: number, x: number, y: number) {
   return (format
     .replace("${z}", z.toString()).replace("${x}", x.toString()).replace("${y}", y.toString())
     .replace("{z}",  z.toString()).replace("{x}",  x.toString()).replace("{y}",  y.toString()));
@@ -110,9 +110,9 @@ export function formatTMSUrl(format: string, z: number, x: number, y: number) {
 
 // Tile zoom 0 - 15 encoding
 // Tiles zoom + coordinate can be encoded into a single 32 bit integer (with zoom <= 15)
-export const MAX_ZOOM_ENCODE = 15;
+const MAX_ZOOM_ENCODE = 15;
 // Encode a tile to a 32 bit integer, given z <= 15
-export function encodeTile(z: number, x: number, y: number): number {
+function encodeTile(z: number, x: number, y: number): number {
   let res = 0;
   // two bit header
   // 0b11 = zoom 15 => x and y follow
@@ -137,10 +137,10 @@ export function encodeTile(z: number, x: number, y: number): number {
   return res;
 }
 
-export type TileId = [number, number, number];
+type TileId = [number, number, number];
 
 // decode a tile from a 32 bit integer, returning [z, x, y]
-export function decodeTile(tile: number): TileId {
+function decodeTile(tile: number): TileId {
   let z, x, y;
   let header = (tile >> 30) & 0b11;
   if(header === 0b11) {
@@ -160,7 +160,7 @@ export function decodeTile(tile: number): TileId {
 function lineCrossedTilesHorizontal(x0: number, y0: number, x1: number, y1: number): [number, number][] {
   const dx = x1 - x0;
   const dy = y1 - y0;
-  let res = [];
+  let res: [number, number][] = [];
   let x = x0;
   while(x < x1) {
     // pick next x coordinate to examine, which is the next whole x (or x1 if next whole x is greater)
@@ -174,13 +174,13 @@ function lineCrossedTilesHorizontal(x0: number, y0: number, x1: number, y1: numb
     }
 
     // find y for this + next x, and mark cells contained within as crossed
-    const y = (x) => y0 + dy * (x / dx);
+    const y = (x: number) => y0 + dy * ((x - x0) / dx);
     const bound0 = y(x);
     const bound1 = y(nextX);
     const lowY = Math.floor(Math.min(bound0, bound1));
-    const highY = Math.ceil(Math.min(bound0, bound1));
+    const highY = Math.floor(Math.max(bound0, bound1));
     for(let hitY = lowY; hitY <= highY; hitY++) {
-      res.push([x, hitY]);
+      res.push([Math.floor(x), hitY]);
     }
 
     x = nextX;
@@ -190,7 +190,7 @@ function lineCrossedTilesHorizontal(x0: number, y0: number, x1: number, y1: numb
 }
 
 // Given two locations, calculate all of the tiles that they cross at the given zoom level
-export function getLineCrossedTiles(l0: TileCoordinate, l1: TileCoordinate, zoom: number): TileId[] {
+function getLineCrossedTiles(l0: TileCoordinate, l1: TileCoordinate, zoom: number): TileId[] {
   const [x0, y0] = l0.atZoom(zoom);
   const [x1, y1] = l1.atZoom(zoom);
 
@@ -208,7 +208,7 @@ export function getLineCrossedTiles(l0: TileCoordinate, l1: TileCoordinate, zoom
 }
 
 // a set of loaded tile images that can be drawn
-export class TileSet {
+class TileSet {
   zoom: number;
   // tile range (in zoom level coordinates)
   x0: number;
@@ -216,11 +216,11 @@ export class TileSet {
   x1: number;
   y1: number;
 
-  img: HTMLImageElement[][];
+  img: (HTMLImageElement | null)[][];
   loaded: boolean[][];
 
   // construct a TileSet for the given range, reusing images from old if already loaded there
-  constructor(zoom: number, range: [[number, number], [number, number]], old: TileSet[], url: string, onloadCallback: () => void) {
+  constructor(zoom: number, range: [[number, number], [number, number]], old: TileSet[] | undefined, url: string, onloadCallback: () => void) {
     this.zoom = zoom;
     this.x0 = range[0][0];
     this.y0 = range[0][1];
@@ -235,23 +235,25 @@ export class TileSet {
       this.loaded.push([]);
       for(let y = this.y0; y < this.y1; y++) {
         let im = null;
-        for(let t = 0; t < old.length; t++) {
-          im = old[t].getTile(zoom, x, y);
-          if(im != null) break;
+        if(old !== undefined) {
+          for(let t = 0; t < old.length; t++) {
+            im = old[t].getTile(zoom, x, y);
+            if(im != null) break;
+          }
         }
         let loaded = im != null;
         if(loaded) {
           this.img[this.img.length - 1].push(im);
         } else {
           let newIm = new Image();
-          newIm.onload = function() {
+          newIm.onload = () => {
             this.loaded[x - this.x0][y - this.y0] = true;
             onloadCallback();
-          }.bind(this);
-          newIm.onerror = function() {
+          };
+          newIm.onerror = () => {
             // image doesn't exist, but it is still finished loading
             this.loaded[x - this.x0][y - this.y0] = true;
-          }.bind(this);
+          };
           newIm.src = formatTMSUrl(url, zoom, x, y);
           this.img[this.img.length - 1].push(newIm);
         }
@@ -297,7 +299,7 @@ export class TileSet {
       return null;
     }
 
-    if(this.img[iX][iY].height === 0) {
+    if(this.img[iX][iY]?.height === 0) {
       return null;
     }
 
@@ -325,7 +327,7 @@ export class TileSet {
   }
 }
 
-export class Viewport {
+class Viewport {
   // viewport top left and bottom right (zoom 0 tile space)
   x0: number;
   y0: number;
@@ -484,7 +486,7 @@ export class Viewport {
 
 // a group of overlapping TileSets of the same area at different zoom levels
 // this allows the app to use old tiles to draw the current view while newer tiles are still loading
-export class TileSetBuffer {
+class TileSetBuffer {
   tiles: TileSet[];
   url: string;
   loadCallback: () => void;
@@ -526,6 +528,6 @@ export class TileSetBuffer {
 }
 
 // modulo operator that returns positive results for negative operands
-function mod(n, m) {
+function mod(n: number, m: number) {
   return ((n % m) + m) % m;
 }

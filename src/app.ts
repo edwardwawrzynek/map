@@ -28,7 +28,7 @@ class MapApp {
   
   view: Viewport;
   declination: number;
-  declinationGetCallbackId: number;
+  declinationGetCallbackId: number | null;
   
   // maps to display
   layers: MapLayerTiles[];
@@ -51,18 +51,20 @@ class MapApp {
 
   constructor(id: string, layers: MapLayer[], showDecorators: boolean) {
     this.canvas = document.getElementById(id) as HTMLCanvasElement;
-    this.ctx = this.canvas.getContext('2d');
+    this.ctx = this.canvas.getContext('2d')!;
     this.width = this.canvas.width;
     this.height = this.canvas.height;
 
     this.mouseClicked = false;
+    this.pMouseX = 0;
+    this.pMouseY = 0;
     this.callbackId = null;
     this.wheelCallbackId = null;
-    this.canvas.addEventListener('mousedown', function(e: MouseEvent) { this.mousedown(e); }.bind(this));
-    this.canvas.addEventListener('mouseup', function(e: MouseEvent) { this.mouseup(e); }.bind(this));
-    this.canvas.addEventListener('mouseleave', function(e: MouseEvent) { this.mouseup(e); }.bind(this));
-    this.canvas.addEventListener('mousemove', function(e: MouseEvent) { this.mousemove(e); }.bind(this));
-    this.canvas.addEventListener('wheel', function(e: WheelEvent) { this.wheel(e); }.bind(this));
+    this.canvas.addEventListener('mousedown', (e: MouseEvent) => { this.mousedown(e); });
+    this.canvas.addEventListener('mouseup', (e: MouseEvent) => { this.mouseup(e); });
+    this.canvas.addEventListener('mouseleave', (e: MouseEvent) => { this.mouseup(e); });
+    this.canvas.addEventListener('mousemove', (e: MouseEvent) => { this.mousemove(e); });
+    this.canvas.addEventListener('wheel', (e: WheelEvent) => { this.wheel(e); });
 
     this.margin = showDecorators ? MARGINS : [[0, 0], [0, 0]];
     this.showDecorators = showDecorators;
@@ -70,6 +72,7 @@ class MapApp {
     this.view = new Viewport(0.0, 0.0, 1.0, 1.0);
     this.declination = 0.0;
     this.declinationGetCallbackId = null;
+    this.layers = [];
     this.setLayers(layers);
   }
 
@@ -81,14 +84,14 @@ class MapApp {
       return {
         ...layer,
         canvas,
-        ctx: canvas.getContext("2d"),
+        ctx: canvas.getContext("2d")!,
         tiles: new TileSetBuffer(
           layer.url, 
-          function() {
+          () => {
             if(this.callbackId == null) { 
-              this.callbackId = window.requestAnimationFrame(function() { this.run(); }.bind(this));
+              this.callbackId = window.requestAnimationFrame(() => { this.run(); });
             }
-          }.bind(this)
+          }
         )
       };
     });
@@ -141,7 +144,7 @@ class MapApp {
     if(this.wheelCallbackId != null) {
       window.clearTimeout(this.wheelCallbackId);
     }
-    this.wheelCallbackId = window.setTimeout(function() { this.loadTiles(); }.bind(this), SCROLL_LOAD_DELAY);
+    this.wheelCallbackId = window.setTimeout(() => { this.loadTiles(); }, SCROLL_LOAD_DELAY);
 
     this.run();
   }

@@ -1,6 +1,6 @@
-import * as fs from 'fs';
-import * as JSONStream from 'jsonstream';
-import es from 'event-stream';
+var fs = require('fs');
+var JSONStream = require('jsonstream');
+var es = require('event-stream');
 
 function openJSONStream(path: string, field: any) {
   const stream = fs.createReadStream(path, {flags: "r", encoding: "utf-8"});
@@ -20,7 +20,7 @@ interface USFSFeatureEntry {
     // Surface type
     TRAIL_TYPE: "SNOW" | "WATER" | "TERRA";
     // Internal USFS control number
-    TRAIL_CN;
+    TRAIL_CN: string;
     // Beginning measuring point on route for this segment
     BMP: number;
     // End measuring point on route for this segment
@@ -126,7 +126,7 @@ interface USFSFeatureEntry {
   }
 }
 
-openJSONStream("USFS_Trails_System.geojson", ["features", true]).pipe(es.mapSync((data: USFSFeatureEntry) => {
+openJSONStream("USFS_Trail_System.geojson", ["features", true]).pipe(es.mapSync((data: USFSFeatureEntry) => {
   console.log("------");
   console.log(data.properties.TRAIL_NAME);
   console.log(data.properties.TRAIL_NO);
