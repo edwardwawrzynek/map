@@ -11,7 +11,9 @@
     "@types/event-stream": "^3.3.34",
     "@types/jsonstream": "^0.8.30",
     "@types/node": "^16.4.7",
-    "typescript": "^4.3.5"
+    "typescript": "^4.3.5",
+    "webpack": "^5.49.0",
+    "webpack-cli": "^4.7.2"
   },
   "scripts": {
     "build_app": "tsc --target es5 --strict --lib dom,esnext --outFile dist/app.js src/util.ts src/app.ts",

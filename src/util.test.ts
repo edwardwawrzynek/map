@@ -45,6 +45,10 @@ function cmpTileId(a: TileId, b: TileId): number {
   }
 }
 
+function cmpNum(a: number, b: number): number {
+  return a - b;
+}
+
 function testLineTileCross() {
   const a = new TileCoordinate(4, 0.5, 0.5);
   const b = new TileCoordinate(4, 2.5, 3.5);
@@ -73,8 +77,48 @@ function testLineTileCross() {
       cmpTileId
     )
   );
+
+  const hit2 = getLineCrossedTiles(new TileCoordinate(12, 0.2, 0.15), new TileCoordinate(12, 0.34, 0.995), 12);
+  console.assert(
+    arraysContainSame(
+      hit2, 
+      [[12, 0, 0]],
+      cmpTileId
+    )
+  );
+}
+
+function testTileContaining() {
+  console.assert(arraysContainSame(
+    tileContaining([
+      [2, 1, 2],
+      [3, 2, 4]
+    ]),
+    [2, 1, 2],
+    cmpNum
+  ));
+  console.assert(arraysContainSame(
+    tileContaining([
+      [3, 4, 2],
+      [3, 6, 1],
+      [2, 3, 1],
+      [3, 0, 7]
+    ]),
+    [0, 0, 0],
+    cmpNum
+  ));
+  console.assert(arraysContainSame(
+    tileContaining([
+      [3, 4, 2],
+      [3, 6, 1],
+      [2, 3, 1]
+    ]),
+    [1, 1, 0],
+    cmpNum
+  ));
 }
 
 testTileEncoding();
 testLineTileCross();
+testTileContaining();
 console.log("Tests done");

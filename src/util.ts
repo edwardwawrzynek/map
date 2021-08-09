@@ -199,12 +199,62 @@ function getLineCrossedTiles(l0: TileCoordinate, l1: TileCoordinate, zoom: numbe
 
   let res = [];
   if(Math.abs(dy) <= Math.abs(dx)) {
+    // force x1 > x0
+    if(dx < 0) {
+      return getLineCrossedTiles(l1, l0, zoom);
+    }
     res = lineCrossedTilesHorizontal(x0, y0, x1, y1);
   } else {
+    // force y1 > y0
+    if(dy < 0) {
+      return getLineCrossedTiles(l1, l0, zoom);
+    }
     res = lineCrossedTilesHorizontal(y0, x0, y1, x1).map(([y, x]) => [x, y]);
   }
 
   return res.map(([x, y]) => [zoom, x, y]);
+}
+
+// check if tile0 contains tile1
+function tileContains(tile0: TileId, tile1: TileId): boolean {
+  if(tile1[0] < tile0[0]) {
+    return false;
+  }
+  let [x0, y0] = new TileCoordinate(tile0[0], tile0[1], tile0[2]).atZoom(0);
+  let tile0Size = new TileCoordinate(tile0[0], 1, 1).atZoom(0)[0];
+  let [x1, y1] = new TileCoordinate(tile1[0], tile1[1], tile1[2]).atZoom(0);
+  let tile1Size = new TileCoordinate(tile1[0], 1, 1).atZoom(0)[0];
+  return (
+    x1 >= x0 && 
+    x1 + tile1Size <= x0 + tile0Size &&
+    y1 >= y0 &&
+    y1 + tile1Size <= y0 + tile0Size
+  );
+}
+
+// Get the smallest tile completely containing the two given tiles
+function joinTiles(tile0: TileId, tile1: TileId): TileId {
+  // grow tile0 until it contains tile1
+  while(!tileContains(tile0, tile1)) {
+    let [x, y] = new TileCoordinate(tile0[0], tile0[1], tile0[2]).atZoom(tile0[0] - 1);
+    tile0 = [tile0[0] - 1, Math.floor(x), Math.floor(y)];
+  }
+
+  return tile0;
+}
+
+// Get the smallest tile completely containing the given tiles
+function tileContaining(tiles: TileId[]): TileId {
+  if(tiles.length === 0) {
+    return [0, 0, 0];
+  }
+
+  let res = tiles[0];
+  for(let i = 1; i < tiles.length; i++) {
+    res = joinTiles(res, tiles[i]);
+  }
+
+  return res;
 }
 
 // a set of loaded tile images that can be drawn
@@ -526,6 +576,37 @@ class TileSetBuffer {
     }
   }
 }
+
+// Feature json format
+// Trail format
+interface TrailEntry {
+  type: "trail";
+  // encoded TileId fully containing the trail
+  tile: number;
+  // name of the trail
+  name: string;
+  // longitude, latitude coordinates
+  route: [number, number][];
+  // trail length (miles)
+  length: number;
+}
+
+// Site format
+interface SiteEntry {
+  type: "site";
+  // encoded TileId containing the location of the site
+  tile: number;
+  // name of the site
+  name: string;
+  // site type / purpose
+  site_type: string;
+  // longitude, latitude coordinate
+  location: [number, number];
+  // url for more information
+  url: string | null;
+}
+
+type FeatureEntry = TrailEntry | SiteEntry;
 
 // modulo operator that returns positive results for negative operands
 function mod(n: number, m: number) {
