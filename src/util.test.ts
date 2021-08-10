@@ -1,3 +1,5 @@
+import { encodeTile, decodeTile, TileId, TileCoordinate, getLineCrossedTiles, tileContaining, boundBoxOverlap } from "./util";
+
 function testTileEncoding() {
   // fuzz test tile encoding
   for(let i = 0; i < 50000; i++) {
@@ -118,7 +120,42 @@ function testTileContaining() {
   ));
 }
 
+function testBBOverlap() {
+  console.assert(
+    boundBoxOverlap([[0, 0], [1, 1]], [[0.5, 0.5], [0.8, 0.8]])
+  );
+  console.assert(
+    boundBoxOverlap([[0, 0], [1, 1]], [[-0.5, -0.5], [0.8, 0.8]])
+  );
+  console.assert(
+    boundBoxOverlap([[0, 0], [1, 1]], [[-0.5, 0.5], [0.8, 0.8]])
+  );
+  console.assert(
+    boundBoxOverlap([[0, 0], [1, 1]], [[0.5, -0.5], [0.8, 0.1]])
+  );
+  console.assert(
+    !boundBoxOverlap([[0, 0], [1, 1]], [[-0.5, -0.5], [0.8, -0.1]])
+  );
+
+  console.assert(
+    boundBoxOverlap([[0.5, 0.5], [0.8, 0.8]], [[0, 0], [1, 1]])
+  );
+  console.assert(
+    boundBoxOverlap([[-0.5, -0.5], [0.8, 0.8]], [[0, 0], [1, 1]])
+  );
+  console.assert(
+    boundBoxOverlap([[-0.5, 0.5], [0.8, 0.8]], [[0, 0], [1, 1]])
+  );
+  console.assert(
+    boundBoxOverlap([[0.5, -0.5], [0.8, 0.1]], [[0, 0], [1, 1]])
+  );
+  console.assert(
+    !boundBoxOverlap([[-0.5, -0.5], [0.8, -0.1]], [[0, 0], [1, 1]])
+  );
+}
+
 testTileEncoding();
 testLineTileCross();
 testTileContaining();
+testBBOverlap();
 console.log("Tests done");

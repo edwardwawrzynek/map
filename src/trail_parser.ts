@@ -1,33 +1,6 @@
-var fs = require('fs');
-var JSONStream = require('jsonstream');
-var es = require('event-stream');
-
-function openJSONStream(path: string, field: any) {
-  const stream = fs.createReadStream(path, {flags: "r", encoding: "utf-8"});
-  const parser = JSONStream.parse(field);
-  return stream.pipe(parser);
-}
-
-// Given a route (as [longitude, latitude] waypoints), find the smallest tile wholly containing that route
-function tileContainingRoute(route: [number, number][]): TileId {
-  if(route.length === 0) {
-    return [0, 0, 0];
-  } else if(route.length === 1) {
-    const [x, y] = TileCoordinate.fromLonLat(route[0][0], route[0][1]).atZoom(MAX_ZOOM_ENCODE);
-    return [MAX_ZOOM_ENCODE, x, y];
-  }
-
-  let res: TileId[] = [];
-  for(let i = 0; i < route.length - 1; i++) {
-    const p0 = TileCoordinate.fromLonLat(route[i][0], route[i][1]);
-    const p1 = TileCoordinate.fromLonLat(route[i + 1][0], route[i + 1][1]);
-
-    const crossed = getLineCrossedTiles(p0, p1, MAX_ZOOM_ENCODE);
-    res.push(tileContaining(crossed));
-  }
-
-  return tileContaining(res);
-}
+import { TrailEntry, encodeTile, tileContainingRoute, boundBoxForRoute } from "./util";
+import * as fs from 'fs';
+import oboe from 'oboe';
 
 // USFS trail feature entry (format from USFS National Trail System geojson)
 interface USFSFeatureEntry {
@@ -148,24 +121,33 @@ interface USFSFeatureEntry {
   }
 }
 
-function USFSTrailToEntry(entry: USFSFeatureEntry): TrailEntry {
+function USFSTrailToEntry(entry: USFSFeatureEntry, id: number): TrailEntry {
   const tile = tileContainingRoute(entry.geometry.coordinates);
   return {
+    id,
     type: "trail",
     name: entry.properties.TRAIL_NAME ?? "Unnamed USFS Trail",
     length: entry.properties.SEGMENT_LENGTH,
     route: entry.geometry.coordinates,
-    tile: encodeTile(tile[0], tile[1], tile[2])
+    tile: encodeTile(...tile),
+    boundBox: boundBoxForRoute(entry.geometry.coordinates),
   };
 }
 
-console.log("[");
-openJSONStream("USFS_Trail_System.geojson", ["features", true]).pipe(es.mapSync((data: USFSFeatureEntry) => {
-  // TODO: handle geometry type MultiLineString (trails with splits in the middle)
-  if(data.geometry === null || data.geometry.type !== "LineString") {
-    return;
-  }
-  const entry = USFSTrailToEntry(data);
-  console.log(`${JSON.stringify(entry)},`);
-}));
-console.log("]");
+
+let id = 0;
+console.log('{"trails": [');
+oboe(fs.createReadStream("USFS_Trail_System.geojson"))
+  .node("features.*", (data: USFSFeatureEntry) => {
+    // TODO: handle geometry type MultiLineString (trails with splits in the middle)
+    if(data.geometry === null || data.geometry.type !== "LineString") {
+      return;
+    }
+    const entry = USFSTrailToEntry(data, id++);
+    console.log(`${JSON.stringify(entry)},`);
+
+    return oboe.drop;
+  })
+  .done(() => {
+    console.log("]}");
+  });

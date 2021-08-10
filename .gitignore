@@ -1,4 +1,5 @@
 node_modules/
 USFS_Trail_System.geojson
-trails.json
+src/trails.json
+src/trails.json.full
 dist/

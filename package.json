@@ -2,23 +2,28 @@
   "name": "topo",
   "version": "1.0.0",
   "description": "USFS Topographic Map + Trail System Application",
-  "main": "trail_parser.js",
   "dependencies": {
+    "@types/oboe": "^2.1.1",
+    "dexie": "^3.0.3",
     "event-stream": "^4.0.1",
-    "jsonstream": "^1.0.3"
+    "oboe": "^2.1.5"
   },
   "devDependencies": {
     "@types/event-stream": "^3.3.34",
     "@types/jsonstream": "^0.8.30",
     "@types/node": "^16.4.7",
+    "css-loader": "^6.2.0",
+    "html-webpack-plugin": "^5.3.2",
+    "style-loader": "^3.2.1",
+    "ts-loader": "^9.2.5",
     "typescript": "^4.3.5",
     "webpack": "^5.49.0",
-    "webpack-cli": "^4.7.2"
+    "webpack-cli": "^4.7.2",
+    "webpack-dev-server": "^3.11.2"
   },
   "scripts": {
-    "build_app": "tsc --target es5 --strict --lib dom,esnext --outFile dist/app.js src/util.ts src/app.ts",
-    "build_parser": "tsc --target es5 --strict --allowSyntheticDefaultImports --lib dom,esnext --outFile dist/trail_parser.js  src/trail_parser.ts src/util.ts",
-    "build_test": "tsc --target es5 --strict --lib dom,esnext --outFile dist/test.js src/util.ts src/util.test.ts"
+    "build": "webpack",
+    "start": "webpack server --open"
   },
   "repository": {
     "type": "git",

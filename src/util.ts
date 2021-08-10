@@ -1,11 +1,13 @@
-const MAX_ZOOM = 16;
+export const MAX_ZOOM = 16;
+
+export type BoundBox = [[number, number], [number, number]];
 
 // a tile coordinate -- a zoom level, x, and y
 // At zoom level 0, there is just the (0,0) tile
 // At zoom level 1, there are the (0,0), (0,1), (1,0), (1,1) tiles
 // A tile coordinate can be expressed in any zoom level
 // for example, the zoom 1 (0, 1) tile is (0, 0.5) at zoom 0
-class TileCoordinate {
+export class TileCoordinate {
   // represent tiles at MAX_ZOOM (to mostly storing floating point coordinates)
   x: number;
   y: number;
@@ -53,7 +55,7 @@ class TileCoordinate {
 }
 
 // convert a decimal longitude/latiude to degrees, minutes, and seconds
-function decimalToDMS(decimal: number): [number, number, number] {
+export function decimalToDMS(decimal: number): [number, number, number] {
   const degree_sign = Math.sign(decimal);
   decimal = Math.abs(decimal);
   const degree = Math.floor(decimal);
@@ -65,11 +67,11 @@ function decimalToDMS(decimal: number): [number, number, number] {
 }
 
 // convert a degrees, minutes, and seconds longitude/latitude to decimal
-function DMSToDecimal(degree: number, minute: number, seconds: number): number {
+export function DMSToDecimal(degree: number, minute: number, seconds: number): number {
   return degree + minute / 60.0 + seconds / 3600.0;
 }
 
-function formatDMSComponents(degree: number, minute: number, seconds: number): string[] {
+export function formatDMSComponents(degree: number, minute: number, seconds: number): string[] {
   // round seconds to 2 decimal places
   seconds = Math.round(seconds * 100.0) / 100.0;
   if(seconds >= 60.0) {
@@ -86,23 +88,23 @@ function formatDMSComponents(degree: number, minute: number, seconds: number): s
   }
 }
 
-function formatDMS(degree: number, minute: number, seconds: number): string {
+export function formatDMS(degree: number, minute: number, seconds: number): string {
   return formatDMSComponents(degree, minute, seconds).join("");
 }
 
-function formatDegrees(degrees: number): string {
+export function formatDegrees(degrees: number): string {
   const [d, m, s] = decimalToDMS(degrees);
   return formatDMS(d, m, s);
 }
 
-function formatDegreesComponents(degrees: number): string[] {
+export function formatDegreesComponents(degrees: number): string[] {
   const [d, m, s] = decimalToDMS(degrees);
   return formatDMSComponents(d, m, s);
 }
 
 // convert a endpoint format specifier to concrete url
 // zoom, x, and y parameters are expected to be formatted in the url as ${z} or {z}
-function formatTMSUrl(format: string, z: number, x: number, y: number) {
+export function formatTMSUrl(format: string, z: number, x: number, y: number) {
   return (format
     .replace("${z}", z.toString()).replace("${x}", x.toString()).replace("${y}", y.toString())
     .replace("{z}",  z.toString()).replace("{x}",  x.toString()).replace("{y}",  y.toString()));
@@ -110,9 +112,9 @@ function formatTMSUrl(format: string, z: number, x: number, y: number) {
 
 // Tile zoom 0 - 15 encoding
 // Tiles zoom + coordinate can be encoded into a single 32 bit integer (with zoom <= 15)
-const MAX_ZOOM_ENCODE = 15;
+export const MAX_ZOOM_ENCODE = 15;
 // Encode a tile to a 32 bit integer, given z <= 15
-function encodeTile(z: number, x: number, y: number): number {
+export function encodeTile(z: number, x: number, y: number): number {
   let res = 0;
   // two bit header
   // 0b11 = zoom 15 => x and y follow
@@ -137,10 +139,10 @@ function encodeTile(z: number, x: number, y: number): number {
   return res;
 }
 
-type TileId = [number, number, number];
+export type TileId = [number, number, number];
 
 // decode a tile from a 32 bit integer, returning [z, x, y]
-function decodeTile(tile: number): TileId {
+export function decodeTile(tile: number): TileId {
   let z, x, y;
   let header = (tile >> 30) & 0b11;
   if(header === 0b11) {
@@ -157,7 +159,7 @@ function decodeTile(tile: number): TileId {
 }
 
 // Calculate the cells crossed by a horizontal-ish line (|dy/dy| <= 1 )
-function lineCrossedTilesHorizontal(x0: number, y0: number, x1: number, y1: number): [number, number][] {
+export function lineCrossedTilesHorizontal(x0: number, y0: number, x1: number, y1: number): [number, number][] {
   const dx = x1 - x0;
   const dy = y1 - y0;
   let res: [number, number][] = [];
@@ -190,7 +192,7 @@ function lineCrossedTilesHorizontal(x0: number, y0: number, x1: number, y1: numb
 }
 
 // Given two locations, calculate all of the tiles that they cross at the given zoom level
-function getLineCrossedTiles(l0: TileCoordinate, l1: TileCoordinate, zoom: number): TileId[] {
+export function getLineCrossedTiles(l0: TileCoordinate, l1: TileCoordinate, zoom: number): TileId[] {
   const [x0, y0] = l0.atZoom(zoom);
   const [x1, y1] = l1.atZoom(zoom);
 
@@ -216,7 +218,7 @@ function getLineCrossedTiles(l0: TileCoordinate, l1: TileCoordinate, zoom: numbe
 }
 
 // check if tile0 contains tile1
-function tileContains(tile0: TileId, tile1: TileId): boolean {
+export function tileContains(tile0: TileId, tile1: TileId): boolean {
   if(tile1[0] < tile0[0]) {
     return false;
   }
@@ -233,7 +235,7 @@ function tileContains(tile0: TileId, tile1: TileId): boolean {
 }
 
 // Get the smallest tile completely containing the two given tiles
-function joinTiles(tile0: TileId, tile1: TileId): TileId {
+export function joinTiles(tile0: TileId, tile1: TileId): TileId {
   // grow tile0 until it contains tile1
   while(!tileContains(tile0, tile1)) {
     let [x, y] = new TileCoordinate(tile0[0], tile0[1], tile0[2]).atZoom(tile0[0] - 1);
@@ -244,7 +246,7 @@ function joinTiles(tile0: TileId, tile1: TileId): TileId {
 }
 
 // Get the smallest tile completely containing the given tiles
-function tileContaining(tiles: TileId[]): TileId {
+export function tileContaining(tiles: TileId[]): TileId {
   if(tiles.length === 0) {
     return [0, 0, 0];
   }
@@ -257,8 +259,64 @@ function tileContaining(tiles: TileId[]): TileId {
   return res;
 }
 
+// Given a route (as [longitude, latitude] waypoints), find the smallest tile wholly containing that route
+export function tileContainingRoute(route: [number, number][]): TileId {
+  if(route.length === 0) {
+    return [0, 0, 0];
+  } else if(route.length === 1) {
+    const [x, y] = TileCoordinate.fromLonLat(route[0][0], route[0][1]).atZoom(MAX_ZOOM_ENCODE);
+    return [MAX_ZOOM_ENCODE, x, y];
+  }
+
+  let res: TileId[] = [];
+  for(let i = 0; i < route.length - 1; i++) {
+    const p0 = TileCoordinate.fromLonLat(route[i][0], route[i][1]);
+    const p1 = TileCoordinate.fromLonLat(route[i + 1][0], route[i + 1][1]);
+
+    const crossed = getLineCrossedTiles(p0, p1, MAX_ZOOM_ENCODE);
+    res.push(tileContaining(crossed));
+  }
+
+  return tileContaining(res);
+}
+
+// calculate a bounding box for a route
+export function boundBoxForRoute(route: [number, number][]): BoundBox {
+  if(route.length === 0) {
+    return [[0, 0], [0, 0]];
+  }
+
+  let res: BoundBox = [[route[0][0], route[0][1]], [route[0][0], route[0][1]]];
+  for(let i = 1; i < route.length; i++) {
+    const [x, y] = route[i];
+    if(x < res[0][0]) {
+      res[0][0] = x;
+    }
+    if(x > res[1][0]) {
+      res[1][0] = x;
+    }
+    if(y < res[0][1]) {
+      res[0][1] = y;
+    }
+    if(y > res[1][1]) {
+      res[1][1] = y;
+    }
+  }
+
+  return res;
+}
+
+function bbOverlap1d(b0: BoundBox, b1: BoundBox, i: number): boolean {
+  return b0[1][i] >= b1[0][i] && b1[1][i] >= b0[0][i];
+}
+
+// check if two bounding boxes overlap
+export function boundBoxOverlap(b0: BoundBox, b1: BoundBox): boolean {
+  return bbOverlap1d(b0, b1, 0) && bbOverlap1d(b0, b1, 1);
+}
+
 // a set of loaded tile images that can be drawn
-class TileSet {
+export class TileSet {
   zoom: number;
   // tile range (in zoom level coordinates)
   x0: number;
@@ -270,7 +328,7 @@ class TileSet {
   loaded: boolean[][];
 
   // construct a TileSet for the given range, reusing images from old if already loaded there
-  constructor(zoom: number, range: [[number, number], [number, number]], old: TileSet[] | undefined, url: string, onloadCallback: () => void) {
+  constructor(zoom: number, range: BoundBox, old: TileSet[] | undefined, url: string, onloadCallback: () => void) {
     this.zoom = zoom;
     this.x0 = range[0][0];
     this.y0 = range[0][1];
@@ -356,13 +414,13 @@ class TileSet {
     return this.img[iX][iY];
   }
 
-  getRange(): [[number, number], [number, number]] {
+  getRange(): BoundBox {
     return [[this.x0, this.y0], [this.x1, this.y1]];
   }
 
   // check if the tile set is fully loaded over the given range
   // zoom does not have to match this set's zoom
-  fullyLoaded(zoom: number, range: [[number, number], [number, number]]): boolean {
+  fullyLoaded(zoom: number, range: BoundBox): boolean {
     const [t0X, t0Y] = new TileCoordinate(zoom, range[0][0], range[0][1]).atZoom(this.zoom);
     const [t1X, t1Y] = new TileCoordinate(zoom, range[1][0], range[1][1]).atZoom(this.zoom);
     for(let x = Math.floor(t0X); x < Math.ceil(t1X); x++) {
@@ -377,7 +435,7 @@ class TileSet {
   }
 }
 
-class Viewport {
+export class Viewport {
   // viewport top left and bottom right (zoom 0 tile space)
   x0: number;
   y0: number;
@@ -451,11 +509,7 @@ class Viewport {
     this.x1 = cx + sx * 0.5;
   }
 
-  // calculate zoom level needed to load images appropriately sized for the given canvas size
-  // width, height is the canvas size
-  // tileSize is the size of a tile image
-  // returns the minimum zoom level needed such that each tile is drawn at or below it's natural size
-  tileZoomLevel(width: number, height: number, tileSize: number): number {
+  tileZoomLevelRaw(width: number, height: number, tileSize: number): number {
     const sx = this.x1 - this.x0;
     const sy = this.y1 - this.y0;
     // normalize canvas size to num tiles
@@ -464,12 +518,20 @@ class Viewport {
 
     let zoom = Math.max(Math.log2(width / sx), Math.log2(height / sy));
     zoom = Math.ceil(zoom);
-    return Math.min(zoom, MAX_ZOOM);
+    return zoom;
+  }
+
+  // calculate zoom level needed to load images appropriately sized for the given canvas size
+  // width, height is the canvas size
+  // tileSize is the size of a tile image
+  // returns the minimum zoom level needed such that each tile is drawn at or below it's natural size
+  tileZoomLevel(width: number, height: number, tileSize: number): number {
+    return Math.min(this.tileZoomLevelRaw(width, height, tileSize), MAX_ZOOM);
   }
 
   // return the range of tiles that need to be loaded to fully display this viewport at zoom
   // returns [topLeft, bottomRight] in zoom level tile coordinates (NOT zoom 0 coordinates)
-  neededTiles(zoom: number): [[number, number], [number, number]] {
+  neededTiles(zoom: number): BoundBox {
     const t0 = new TileCoordinate(0, this.x0, this.y0);
     const t1 = new TileCoordinate(0, this.x1, this.y1);
     const [t0X, t0Y] = t0.atZoom(zoom);
@@ -532,11 +594,17 @@ class Viewport {
   centerLonLat(): [number, number] {
     return new TileCoordinate(0, (this.x0 + this.x1) / 2, (this.y0 + this.y1) / 2).toLonLat();
   }
+
+  // check if the viewport contains or overlaps with the given longitude latitude bound box
+  overlapsLonLatBoundBox(bb: BoundBox): boolean {
+    const viewBB: BoundBox = [new TileCoordinate(0, this.x0, this.y1).toLonLat(), new TileCoordinate(0, this.x1, this.y0).toLonLat()];
+    return boundBoxOverlap(viewBB, bb);
+  }
 }
 
 // a group of overlapping TileSets of the same area at different zoom levels
 // this allows the app to use old tiles to draw the current view while newer tiles are still loading
-class TileSetBuffer {
+export class TileSetBuffer {
   tiles: TileSet[];
   url: string;
   loadCallback: () => void;
@@ -579,10 +647,14 @@ class TileSetBuffer {
 
 // Feature json format
 // Trail format
-interface TrailEntry {
+export interface TrailEntry {
+  // internal feature id
+  id: number;
   type: "trail";
   // encoded TileId fully containing the trail
   tile: number;
+  // bounding box of the trail (in longitude, latitude)
+  boundBox: BoundBox;
   // name of the trail
   name: string;
   // longitude, latitude coordinates
@@ -592,10 +664,14 @@ interface TrailEntry {
 }
 
 // Site format
-interface SiteEntry {
+export interface SiteEntry {
+  // internal feature id
+  id: number;
   type: "site";
   // encoded TileId containing the location of the site
   tile: number;
+  // boundingBox of the site (just [location, location])
+  boundBox: BoundBox;
   // name of the site
   name: string;
   // site type / purpose
@@ -606,9 +682,57 @@ interface SiteEntry {
   url: string | null;
 }
 
-type FeatureEntry = TrailEntry | SiteEntry;
+export type FeatureEntry = TrailEntry | SiteEntry;
+
+// a set of FeatureEntry's loaded for an area
+export class FeatureEntrySet {
+  features: { [tile: number]: FeatureEntry[] };
+  visibleFeatures: FeatureEntry[];
+
+  constructor() {
+    this.features = {};
+    this.visibleFeatures = [];
+  }
+
+  hasTile(encodedTile: number): FeatureEntry[] | null {
+    if(encodedTile in this.features) {
+      return this.features[encodedTile];
+    } else {
+      return null;
+    }
+  }
+
+  forEach(f: (feature: FeatureEntry) => void) {
+    this.visibleFeatures.forEach(f);
+  }
+
+  addFeature(feature: FeatureEntry, view: Viewport) {
+    if(view.overlapsLonLatBoundBox(feature.boundBox)) {
+      this.visibleFeatures.push(feature);
+    }
+    if(feature.tile in this.features) {
+      this.features[feature.tile].push(feature);
+    } else {
+      this.features[feature.tile] = [feature];
+    }
+  }
+
+  // add features all with the same tile
+  bulkAddFeature(features: FeatureEntry[], tile: number, view: Viewport) {
+    if(tile in this.features) {
+      this.features[tile].push(...features);
+    } else {
+      this.features[tile] = features;
+    }
+    features.forEach((feature) => {
+      if(view.overlapsLonLatBoundBox(feature.boundBox)) {
+        this.visibleFeatures.push(feature);
+      }
+    });
+  }
+}
 
 // modulo operator that returns positive results for negative operands
-function mod(n: number, m: number) {
+export function mod(n: number, m: number) {
   return ((n % m) + m) % m;
 }

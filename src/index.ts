@@ -1,10 +1,76 @@
+import {decimalToDMS, DMSToDecimal, encodeTile, FeatureEntry, FeatureEntrySet, formatDegrees, formatDegreesComponents, MAX_ZOOM_ENCODE, mod, TileCoordinate, TileSetBuffer, TrailEntry, Viewport} from './util';
+import oboe from 'oboe';
+import Dexie, { DexieOptions } from 'dexie';
+import './style.css';
+import trails from './trails.json';
+
 // get magnetic declination for a given location
 // (uses NOAA NCEI api)
 function getDeclination(lon: number, lat: number, callback: (decl: number) => void) {
   fetch(`https://www.ngdc.noaa.gov/geomag-web/calculators/calculateDeclination?lat1=${lat}&lon1=${lon}&resultFormat=json`).then(res => res.json()).then(data => callback(data.result[0].declination));
 }
 
+// feature database handles adding and looking up features in a given area
+class FeatureDatabase extends Dexie {
+  features: Dexie.Table<FeatureEntry, number>;
+
+  constructor() {
+    super("features");
+    this.version(1).stores({
+      features: "&id, tile, name"
+    });
+
+    this.onError = this.onError.bind(this);
+  }
+
+  onError(reason: any) {
+    console.error(`DB Error: ${reason}`);
+  }
+
+  loadFromJSON(path: string) {
+    this.transaction("rw", this.features, async () => {
+      this.features.clear();
+      oboe(path).node("trails.*", async (trail: TrailEntry) => {
+        await this.features.put(trail).catch(this.onError);
+        
+        return oboe.drop;
+      }).done(() => {
+      });
+    }).catch(this.onError);
+  }
+
+  featuresInView(view: Viewport, oldFeatures: FeatureEntrySet): Promise<FeatureEntrySet> {
+    return this.transaction("r", this.features, async () => {
+      let res = new FeatureEntrySet();
+      for(let z = MAX_ZOOM_ENCODE; z >= 0; z--) {
+        const tiles = view.neededTiles(z);
+        for(let x = tiles[0][0]; x <= tiles[1][0]; x++) {
+          for(let y = tiles[0][1]; y <= tiles[1][1]; y++) {
+            const tile = encodeTile(z, x, y);
+            const features = oldFeatures.hasTile(tile) ?? await this.features.where("tile").equals(tile).toArray();
+            res.bulkAddFeature(features, tile, view);
+          }
+        }
+      }
+
+      return res;
+    });
+  }
+}
+
+// delay (in ms) to wait for scrolling to stop before loading tiles
 const SCROLL_LOAD_DELAY = 350;
+// delay (in ms) to wait for scrolling or moving to stop before loading features
+const FEATURE_LOAD_DELAY = 350;
+
+// lowest zoom to start loading features at
+const MIN_FEATURE_ZOOM = 12;
+
+interface MapAppOptions {
+  trailWidthCoeff: number;
+  trailColors: [string, string];
+  zoomCoeff: number;
+}
 
 interface MapLayer {
   url: string;
@@ -28,10 +94,14 @@ class MapApp {
   
   view: Viewport;
   declination: number;
-  declinationGetCallbackId: number | null;
+  loadFeaturesCallbackId: number | null;
   
   // maps to display
   layers: MapLayerTiles[];
+
+  // features loaded
+  features: FeatureEntrySet;
+  featureDB: FeatureDatabase;
 
   // should the longitude / latitude marks + scale be displayed
   showDecorators: boolean;
@@ -49,8 +119,10 @@ class MapApp {
 
   callbackId: number | null;
 
-  constructor(id: string, layers: MapLayer[], showDecorators: boolean) {
-    this.canvas = document.getElementById(id) as HTMLCanvasElement;
+  options: MapAppOptions;
+
+  constructor(canvas: HTMLCanvasElement, layers: MapLayer[], showDecorators: boolean, options: MapAppOptions) {
+    this.canvas = canvas;
     this.ctx = this.canvas.getContext('2d')!;
     this.width = this.canvas.width;
     this.height = this.canvas.height;
@@ -69,11 +141,26 @@ class MapApp {
     this.margin = showDecorators ? MARGINS : [[0, 0], [0, 0]];
     this.showDecorators = showDecorators;
 
-    this.view = new Viewport(0.0, 0.0, 1.0, 1.0);
+    this.featureDB = new FeatureDatabase();
+    // TODO: load dynamically
+    this.featureDB.loadFromJSON(trails);
+    this.features = new FeatureEntrySet();
+
+    this.view = new Viewport(
+      0.12700767108145705,
+      0.30371974271087615,
+      0.34833476697338744,
+      0.4513438253895165
+    );
     this.declination = 0.0;
-    this.declinationGetCallbackId = null;
+    this.loadFeaturesCallbackId = null;
     this.layers = [];
+    this.options = options;
     this.setLayers(layers);
+  }
+
+  setOptions(options: MapAppOptions) {
+    this.options = options;
   }
 
   setLayers(layers: MapLayer[]) {
@@ -138,7 +225,7 @@ class MapApp {
 
   wheel(e: WheelEvent) {
     const [x, y] = this.mousePos(e.offsetX, e.offsetY);
-    this.view.zoom(e.deltaY * 0.005, x, y);
+    this.view.zoom(e.deltaY * 0.005 * this.options.zoomCoeff, x, y);
 
     // set tile loading to occur SCROLL_LOAD_DELAY after scrolling stops
     if(this.wheelCallbackId != null) {
@@ -149,20 +236,37 @@ class MapApp {
     this.run();
   }
 
+  // load trails, features, and declination for the current viewport
+  private loadFeatures() {
+    // get declination
+    getDeclination(this.view.centerLonLat()[0], this.view.centerLonLat()[1], (decl) => {
+      this.declination = decl;
+      this.run();
+    });
+    // select features possibly in view from DB
+    const zoom = this.view.tileZoomLevel(this.viewSize()[0], this.viewSize()[1], 256);
+    if(zoom >= MIN_FEATURE_ZOOM) {
+      this.featureDB.featuresInView(this.view, this.features).then((features) => {
+        this.features = features;
+        this.run();
+      });
+    } else {
+      this.features = new FeatureEntrySet();
+      this.run();
+    }
+  }
+
   private loadTiles() {
     for(let l = 0; l < this.layers.length; l++) {
       const zoom = this.view.tileZoomLevel(this.viewSize()[0], this.viewSize()[1], this.layers[l].tileSize);
       this.layers[l].tiles.loadNew(this.view, zoom);
     }
-    if(this.declinationGetCallbackId !== null) {
-      window.clearTimeout(this.declinationGetCallbackId);
+    if(this.loadFeaturesCallbackId !== null) {
+      window.clearTimeout(this.loadFeaturesCallbackId);
     }
-    this.declinationGetCallbackId = window.setTimeout(() => {
-      getDeclination(this.view.centerLonLat()[0], this.view.centerLonLat()[1], (decl) => {
-        this.declination = decl;
-        this.run();
-      })
-    }, SCROLL_LOAD_DELAY);
+    this.loadFeaturesCallbackId = window.setTimeout(() => {  
+      this.loadFeatures();
+    }, FEATURE_LOAD_DELAY);
   }
 
   resize(w: number, h: number) {
@@ -398,6 +502,49 @@ class MapApp {
     this.ctx.fillText(`${this.declination.toFixed(1)}°`, offX + declWidth / 2 + 5, offY + northHeight);
   }
 
+  private clearMargins() {
+    this.ctx.clearRect(0, 0, this.margin[0][0], this.height);
+    this.ctx.clearRect(this.width - this.margin[0][1], 0, this.margin[0][1], this.height);
+
+    this.ctx.clearRect(0, 0, this.width, this.margin[1][0]);
+    this.ctx.clearRect(0, this.height - this.margin[1][1], this.width, this.margin[1][1]);
+  }
+
+  private lonLatToCanvasXY(c: [number, number]): [number, number] {
+    const p = TileCoordinate.fromLonLat(c[0], c[1]).atZoom(0);
+    return [this.xTileToCanvasPos(p[0]), this.yTileToCanvasPos(p[1])];
+  }
+
+  private drawRoute(route: [number, number][]) {
+    this.ctx.beginPath();
+    this.ctx.moveTo(...this.lonLatToCanvasXY(route[0]));
+    for(let i = 1; i < route.length; i++) {
+      this.ctx.lineTo(...this.lonLatToCanvasXY(route[i]));
+    }
+    this.ctx.stroke();
+  }
+
+  private drawFeatures() {
+    const zoom = this.view.tileZoomLevelRaw(...this.viewSize(), 256);
+    console.log(zoom);
+    const widths = zoom >= 18 ? [7, 3.5] :
+                   zoom >= 16 ? [5, 2] :
+                   zoom >= 15 ? [3, 1.5] :
+                   zoom >= 14 ? [2, 1] :
+                   [1, 0.5];
+
+    this.features.forEach((f) => {
+      if(f.type === "trail") {
+        this.ctx.lineWidth = widths[0] * this.options.trailWidthCoeff;
+        this.ctx.strokeStyle = this.options.trailColors[0];
+        this.drawRoute(f.route);
+        this.ctx.lineWidth = widths[1] * this.options.trailWidthCoeff;
+        this.ctx.strokeStyle = this.options.trailColors[1];
+        this.drawRoute(f.route);
+      }
+    });
+  }
+
   run() {
     this.callbackId = null;
     // clear canvas
@@ -414,10 +561,11 @@ class MapApp {
       this.ctx.globalAlpha = this.layers[l].opacity;
       this.ctx.drawImage(this.layers[l].canvas, this.margin[0][0], this.margin[1][0]);
     }
-
     this.ctx.globalAlpha = 1.0;
+    this.drawFeatures();
 
     if(this.showDecorators) {
+      this.clearMargins();
       this.drawLonLatLines();
       this.drawMapScales();
       this.drawMapDeclination(this.margin[0][0] + w - 80, this.margin[1][0] + h + 40);
@@ -446,11 +594,24 @@ function resizeApp() {
 }
 
 window.onload = function() {
-  app = new MapApp('canvas', [
-    { url: URLS[0], tileSize: 256, opacity: 1.0 },
-    { url: URLS[6], tileSize: 256, opacity: 1.0 },
-    { url: URLS[5], tileSize: 256, opacity: 0.15 },
-  ], true);
+  const canvas = document.createElement("canvas");
+  document.body.appendChild(canvas);
+
+  app = new MapApp(
+    canvas, 
+    [
+      //{ url: URLS[0], tileSize: 256, opacity: 1.0 },
+      //{ url: URLS[6], tileSize: 256, opacity: 1.0 },
+      //{ url: URLS[5], tileSize: 256, opacity: 0.15 },
+      { url: URLS[8], tileSize: 256, opacity: 1.0 }
+    ], 
+    false,
+    {
+      trailWidthCoeff: 1.0,
+      trailColors: ["#288c11", "#bde99d"],
+      zoomCoeff: 1.0
+    }
+  );
   resizeApp();
 };
 
