@@ -1,6 +1,14 @@
+// maximum zoom level to handle tiles at
 export const MAX_ZOOM = 16;
 
+// maximum zoom level to split the feature dataset down to
+// this needs to be specified for both dataset preparation and the application
+export const MAX_ZOOM_DATA_SPLIT = 9;
+
 export type BoundBox = [[number, number], [number, number]];
+
+// list of longitude, latitude coordinates
+export type Route = [number, number][];
 
 // a tile coordinate -- a zoom level, x, and y
 // At zoom level 0, there is just the (0,0) tile
@@ -159,10 +167,10 @@ export function decodeTile(tile: number): TileId {
 }
 
 // Calculate the cells crossed by a horizontal-ish line (|dy/dy| <= 1 )
-export function lineCrossedTilesHorizontal(x0: number, y0: number, x1: number, y1: number): [number, number][] {
+export function lineCrossedTilesHorizontal(x0: number, y0: number, x1: number, y1: number): Route {
   const dx = x1 - x0;
   const dy = y1 - y0;
-  let res: [number, number][] = [];
+  let res: Route = [];
   let x = x0;
   while(x < x1) {
     // pick next x coordinate to examine, which is the next whole x (or x1 if next whole x is greater)
@@ -260,7 +268,7 @@ export function tileContaining(tiles: TileId[]): TileId {
 }
 
 // Given a route (as [longitude, latitude] waypoints), find the smallest tile wholly containing that route
-export function tileContainingRoute(route: [number, number][]): TileId {
+export function tileContainingRoute(route: Route): TileId {
   if(route.length === 0) {
     return [0, 0, 0];
   } else if(route.length === 1) {
@@ -281,7 +289,7 @@ export function tileContainingRoute(route: [number, number][]): TileId {
 }
 
 // calculate a bounding box for a route
-export function boundBoxForRoute(route: [number, number][]): BoundBox {
+export function boundBoxForRoute(route: Route): BoundBox {
   if(route.length === 0) {
     return [[0, 0], [0, 0]];
   }
@@ -543,6 +551,34 @@ export class Viewport {
     ];
   }
 
+  // return the range of tiles covered by this viewport at zoom
+  coveredTilesZoom(zoom: number): BoundBox {
+    const t0 = new TileCoordinate(0, this.x0, this.y0);
+    const t1 = new TileCoordinate(0, this.x1, this.y1);
+    const [t0X, t0Y] = t0.atZoom(zoom);
+    const [t1X, t1Y] = t1.atZoom(zoom);
+    
+    return [
+      [Math.floor(t0X), Math.floor(t0Y)],
+      [Math.floor(t1X), Math.floor(t1Y)]
+    ];
+  }
+
+  // return all tiles covered by the viewport down to max_zoom
+  coveredTiles(max_zoom: number): Set<number> {
+    let tiles = new Set<number>();
+    for(let zoom = 0; zoom <= max_zoom; zoom++) {
+      const bounds = this.coveredTilesZoom(zoom);
+      for(let x = bounds[0][0]; x <= bounds[1][0]; x++) {
+        for(let y = bounds[0][1]; y <= bounds[1][1]; y++) {
+          tiles.add(encodeTile(zoom, x, y));
+        }
+      }
+    }
+
+    return tiles;
+  }
+
   // draw an image on ctx at the given x, y and w, h, and only draw the part of that image within the subsection of the canvas (offX, offY, width, height)
   private drawImage(ctx: CanvasRenderingContext2D, width: number, height: number, offX: number, offY: number, im: HTMLImageElement, x: number, y: number, w: number, h: number) {
     // left and top overflow into margin
@@ -658,7 +694,7 @@ export interface TrailEntry {
   // name of the trail
   name: string;
   // longitude, latitude coordinates
-  route: [number, number][];
+  route: Route;
   // trail length (miles)
   length: number;
 }

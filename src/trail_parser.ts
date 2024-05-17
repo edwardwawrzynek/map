@@ -143,8 +143,11 @@ oboe(fs.createReadStream("USFS_Trail_System.geojson"))
     if(data.geometry === null || data.geometry.type !== "LineString") {
       return;
     }
+    if(id != 0) {
+      console.log(",\n");
+    }
     const entry = USFSTrailToEntry(data, id++);
-    console.log(`${JSON.stringify(entry)},`);
+    console.log(`${JSON.stringify(entry)}`);
 
     return oboe.drop;
   })

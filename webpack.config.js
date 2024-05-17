@@ -1,5 +1,6 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 const webConfig = {
   target: 'web',
@@ -40,6 +41,16 @@ const webConfig = {
   },
 };
 
+const dataConfig = {
+  plugins: [
+    new CopyWebpackPlugin({
+      patterns: [
+        { from: "data/dataset", to: "dataset" },
+      ],
+    }),
+  ],
+};
+
 const parserConfig = {
   target: 'node',
   entry: './src/trail_parser.ts',
@@ -61,6 +72,31 @@ const parserConfig = {
   },
   output: {
     filename: 'trail_parser.node.js',
+    path: path.resolve(__dirname, 'dist'),
+  },
+}
+
+const featurePrepConfig = {
+  target: 'node',
+  entry: './src/feature_divider.ts',
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: 'ts-loader',
+        exclude: /node_modules/,
+      },
+      {
+        test: /\.json/,
+        type: 'asset/resource'
+      }
+    ],
+  },
+  resolve: {
+    extensions: ['.tsx', '.ts', '.js'],
+  },
+  output: {
+    filename: 'feature_divider.node.js',
     path: path.resolve(__dirname, 'dist'),
   },
 }
@@ -90,4 +126,4 @@ const testConfig = {
   },
 }
 
-module.exports = [webConfig, parserConfig, testConfig];
+module.exports = [webConfig, dataConfig, parserConfig, testConfig, featurePrepConfig];
