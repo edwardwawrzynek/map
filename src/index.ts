@@ -66,6 +66,63 @@ class FeatureDatabase extends Dexie {
   }
 }
 
+// a path between a set of waypoints
+// the path may have straight-line sections or follow a set of features
+interface PathPoint {
+  // coordinate of this point
+  coord: [number, number];
+  // whether to follow features from this to the next point
+  followFeatures: boolean;
+};
+
+class Path {
+  // the points defining the path
+  points: PathPoint[];
+  // the resulting route from the path
+  route: [number, number][];
+
+  constructor() {
+    this.points = [];
+    this.route = [];
+  }
+
+  // add a new point to the path
+  addPoint(point: PathPoint) {
+    this.points.push(point);
+    // if this is a straight line path, simply add the point to route
+    if(!point.followFeatures) {
+      this.route.push(point.coord);
+    }
+    // otherwise, find the shortest path along features
+    else {
+      // TODO??
+    }
+
+    console.log(this.points);
+  }
+
+  // remove the last point on the path
+  popPoint(): PathPoint {
+    const pt = this.points.pop();
+    // find the last remaining point on the path and remove from the route until we hit it
+    if(this.points.length === 0) {
+      this.route = [];
+    } else {
+      const last_pt = this.points[this.points.length - 1].coord;
+      for(let i = this.route.length-1; i >= 0; i--) {
+        if(this.route[i][0] === last_pt[0] && this.route[i][1] === last_pt[1]) {
+          break;
+        }
+
+        this.route.pop();
+      }
+    }
+
+    return pt;
+  }
+}
+
+// a style of drawing a route (ie, road, trail, etc)
 abstract class RouteStyle {
   abstract drawRoute(
     route: Route,
@@ -81,12 +138,37 @@ abstract class RouteStyle {
     ctx: CanvasRenderingContext2D,
     lonLatToCanvas: (cord: [number, number]) => [number, number]
   ) {
-    ctx.beginPath();
-    ctx.moveTo(...lonLatToCanvas(route[0]));
-    for (let i = 1; i < route.length; i++) {
-      ctx.lineTo(...lonLatToCanvas(route[i]));
+    if(route.length > 0) {
+      ctx.beginPath();
+      ctx.moveTo(...lonLatToCanvas(route[0]));
+      for (let i = 1; i < route.length; i++) {
+        ctx.lineTo(...lonLatToCanvas(route[i]));
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
+  }
+}
+
+class PathStyle extends RouteStyle {
+  color: string;
+
+  constructor(color: string) {
+    super();
+    this.color = color;
+  }
+
+  drawRoute(
+    route: Route,
+    ctx: CanvasRenderingContext2D,
+    innerRadius: number,
+    outerRadius: number,
+    active: boolean,
+    lonLatToCanvas: (cord: [number, number]) => [number, number]
+  ): void {
+    ctx.lineWidth = outerRadius;
+    ctx.strokeStyle = this.color;
+    ctx.setLineDash([]);
+    this.drawLines(route, ctx, lonLatToCanvas);
   }
 }
 
@@ -150,11 +232,18 @@ type MapLayerTiles = MapLayer & {
 
 const MARGINS: [[number, number], [number, number]] = [[40, 40], [30, 80]];
 
+enum AppMode {
+  Normal,
+  Measure
+}
+
 class MapApp {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   width: number;
   height: number;
+
+  mode: AppMode;
 
   view: Viewport;
   declination: number;
@@ -170,7 +259,10 @@ class MapApp {
   features: FeatureEntrySet;
   featureDB: FeatureDatabase;
 
+  // currently selected feature
   activeFeatureId: number;
+  // path currently being constructed
+  currentPath: Path;
 
   // should the longitude / latitude marks + scale be displayed
   showDecorators: boolean;
@@ -191,12 +283,16 @@ class MapApp {
 
   options: MapAppOptions;
   trailStyle: RouteStyle;
+  pathStyle: RouteStyle;
 
   constructor(canvas: HTMLCanvasElement, layers: MapLayer[], showDecorators: boolean, options: MapAppOptions, view: Viewport) {
     this.canvas = canvas;
     this.ctx = this.canvas.getContext('2d')!;
     this.width = this.canvas.width;
     this.height = this.canvas.height;
+
+    this.mode = AppMode.Normal;
+    this.currentPath = new Path();
 
     this.mouseClicked = false;
     this.pMouseX = 0;
@@ -210,6 +306,7 @@ class MapApp {
     this.canvas.addEventListener('mousemove', (e: MouseEvent) => { this.mousemove(e); });
     this.canvas.addEventListener('wheel', (e: WheelEvent) => { this.wheel(e); });
     this.canvas.addEventListener('click', (e: MouseEvent) => this.mouseclick(e));
+    window.addEventListener('keydown', (e: KeyboardEvent) => this.keydown(e));
 
     this.margin = showDecorators ? MARGINS : [[0, 0], [0, 0]];
     this.showDecorators = showDecorators;
@@ -227,7 +324,12 @@ class MapApp {
     this.layers = [];
     this.options = options;
     this.trailStyle = new TrailStyle(this.options.trailColors);
+    this.pathStyle = new PathStyle("#0000ff");
     this.setLayers(layers);
+  }
+
+  setMargins(showMargins: boolean) {
+    this.margin = showMargins ? MARGINS : [[0, 0], [0, 0]];
   }
 
   setOptions(options: MapAppOptions) {
@@ -272,7 +374,39 @@ class MapApp {
     // if mouse was not moved (the user clicked on the map),
     // look for features to select
     if(!this.mouseMoved) {
-      this.clickFeature(e);
+      if(this.mode == AppMode.Normal) {
+        this.clickFeature(e);
+      } else if(this.mode == AppMode.Measure) {
+        this.clickMeasure(e);
+      }
+    }
+  }
+
+  keydown(e: KeyboardEvent) {
+    // switch to normal mode
+    if(e.key == 'n') {
+      this.mode = AppMode.Normal;
+      this.activeFeatureId = -1;
+      this.run();
+    } 
+    // switch to measure mode
+    else if(e.key == 'm') {
+      if(this.mode === AppMode.Normal) {
+        this.currentPath = new Path();
+      }
+      this.mode = AppMode.Measure;
+      this.activeFeatureId = -1;
+      this.run();
+    }
+    // delete point
+    else if(e.key == 'd' && this.mode === AppMode.Measure) {
+      this.currentPath.popPoint();
+      this.run();
+    }
+    // toggle decorators
+    else if(e.key == 'f') {
+      this.setShowDecorators(!this.showDecorators);
+      this.run();
     }
   }
 
@@ -329,7 +463,7 @@ class MapApp {
     return this.view.tileZoomLevel(...this.viewSize(), 256);
   }
 
-  // check if a feature was clicked
+  // check if a feature was clicked and select it if so
   private clickFeature(e: MouseEvent) {
     const coord = this.getMouseCoordinate(e);
     const [feature, dist] = this.features.closestFeature(coord);
@@ -342,6 +476,14 @@ class MapApp {
     } else {
       this.activeFeatureId = -1;
     }
+    this.run();
+  }
+
+  // handle a click in measure mode
+  private clickMeasure(e: MouseEvent) {
+    const coord = this.getMouseCoordinate(e);
+
+    this.currentPath.addPoint({coord, followFeatures: false});
     this.run();
   }
 
@@ -669,13 +811,19 @@ class MapApp {
     return [this.xTileToCanvasPos(p[0]), this.yTileToCanvasPos(p[1])];
   }
 
-  private drawFeatures() {
+  private getFeatureWidth(): [number, number] {
     const zoom = this.getZoom();
-    const widths = zoom >= 18 ? [9, 4.5] :
+    const widths: [number, number] = zoom >= 18 ? [9, 4.5] :
       zoom >= 16 ? [5, 2] :
         zoom >= 15 ? [3, 2] :
           zoom >= 14 ? [2, 2] :
             [1.5, 1.5];
+    
+    return widths;
+  }
+
+  private drawFeatures() {
+    const widths = this.getFeatureWidth();
 
     this.features.forEach((f) => {
       if (f.type === "trail") {
@@ -688,6 +836,33 @@ class MapApp {
           (cord: [number, number]) => this.lonLatToCanvasXY(cord)
         );
       }
+    });
+  }
+
+  private drawPath(path: Path) {
+    const zoom = this.getZoom();
+    const widths = this.getFeatureWidth();
+    // draw route
+    this.pathStyle.drawRoute(
+      path.route, 
+      this.ctx, 
+      widths[1] * this.options.trailWidthCoeff,
+      widths[0] * this.options.trailWidthCoeff,
+      false,
+      (cord: [number, number]) => this.lonLatToCanvasXY(cord)
+    );
+    // draw points on path
+    const pointRadius = zoom <= 12 ? 1 : widths[1] * 2;
+
+    path.points.forEach((p) => {
+      const [x,y] = this.lonLatToCanvasXY(p.coord);
+      this.ctx.fillStyle = "#ffffff";
+      this.ctx.strokeStyle = "#000000";
+      this.ctx.lineWidth = 3;
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, pointRadius, 0, 2*Math.PI);
+      this.ctx.stroke();
+      this.ctx.fill();
     });
   }
 
@@ -709,6 +884,10 @@ class MapApp {
     }
     this.ctx.globalAlpha = 1.0;
     this.drawFeatures();
+    if(this.mode === AppMode.Measure) {
+      console.log(this.currentPath);
+      this.drawPath(this.currentPath);
+    }
 
     if (this.showDecorators) {
       this.clearMargins();
@@ -748,10 +927,10 @@ window.onload = function () {
   app = new MapApp(
     canvas,
     [
-      //{ url: URLS[0], tileSize: 256, opacity: 1.0 },
+      { url: URLS[0], tileSize: 256, opacity: 1.0 },
       { url: URLS[6], tileSize: 256, opacity: 1.0 },
-      //{ url: URLS[5], tileSize: 256, opacity: 0.15 },
-      //{ url: URLS[11], tileSize: 512, opacity: 1.0 }
+      { url: URLS[5], tileSize: 256, opacity: 0.15 },
+      //{ url: URLS[13], tileSize: 512, opacity: 0.5 }
     ],
     true,
     {
