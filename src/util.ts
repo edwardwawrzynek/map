@@ -62,6 +62,65 @@ export class TileCoordinate {
   }
 }
 
+function deg2rad(deg: number): number {
+  return deg * (Math.PI/180)
+}
+
+// Get the distance (in miles) between two coordinates
+export function coordDistMiles(c0: [number, number], c1: [number, number]): number {
+  const [lon1, lat1] = c0;
+  const [lon2, lat2] = c1;
+
+  const R = 3959.0; // radius of Earth in miles
+  const dLat = deg2rad(lat2-lat1);
+  const dLon = deg2rad(lon2-lon1); 
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2); 
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+  const d = R * c; // distance in mi
+  return d;
+}
+
+// get distance from point segment to line
+// distance is in screen coordinate space, which is not physically meaningful
+export function distanceToLine(point: [number, number], endpoint1: [number, number], endpoint2: [number, number]) {
+  const [x,y] = point;
+  const [x1,y1] = endpoint1;
+  const [x2,y2] = endpoint2;
+
+  const A = x - x1;
+  const B = y - y1;
+  const C = x2 - x1;
+  const D = y2 - y1;
+
+  const dot = A * C + B * D;
+  const len_sq = C * C + D * D;
+  let param = -1;
+  if (len_sq != 0) //in case of 0 length line
+      param = dot / len_sq;
+
+  let xx, yy;
+
+  if (param < 0) {
+    xx = x1;
+    yy = y1;
+  }
+  else if (param > 1) {
+    xx = x2;
+    yy = y2;
+  }
+  else {
+    xx = x1 + param * C;
+    yy = y1 + param * D;
+  }
+
+  const dx = x - xx;
+  const dy = y - yy;
+  return Math.sqrt(dx * dx + dy * dy);
+} 
+
 // convert a decimal longitude/latiude to degrees, minutes, and seconds
 export function decimalToDMS(decimal: number): [number, number, number] {
   const degree_sign = Math.sign(decimal);
@@ -463,6 +522,18 @@ export class Viewport {
     return tileScale * (this.x1 - this.x0);
   }
 
+  // return the coordinates of a location within the viewport
+  // x and y are in the [0, 1] range
+  getCoordinate(x: number, y: number): [number, number] {
+    const sx = this.x1 - this.x0;
+    const sy = this.y1 - this.y0;
+
+    const rx = this.x0 + x * sx;
+    const ry = this.y0 + y * sy;
+
+    return new TileCoordinate(0, rx, ry).toLonLat();
+  }
+
   // move the viewport in the (dX, dY) direction
   // dX and dY are in the [0, 1] range, and the map moves proportionally to its current scale
   pan(dX: number, dY: number) {
@@ -765,6 +836,29 @@ export class FeatureEntrySet {
         this.visibleFeatures.push(feature);
       }
     });
+  }
+
+  // find the closest feature to the given point
+  // return the feature and distance in coordinate distance
+  closestFeature(coord: [number, number]): [FeatureEntry, number] {
+    let feature: FeatureEntry;
+    let dist = 1e100;
+
+    this.forEach((f) => {
+      if(f.type == "trail") {
+        let minDist = 1e100;
+        for(let i = 1; i < f.route.length; i++) {
+          minDist = Math.min(minDist, distanceToLine(coord, f.route[i-1], f.route[i]));
+        }
+
+        if(minDist < dist) {
+          dist = minDist;
+          feature = f;
+        }
+      }
+    });
+
+    return [feature, dist];
   }
 }
 

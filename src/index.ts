@@ -72,6 +72,7 @@ abstract class RouteStyle {
     ctx: CanvasRenderingContext2D,
     innerRadius: number,
     outerRadius: number,
+    active: boolean,
     lonLatToCanvas: (cord: [number, number]) => [number, number]
   ): void;
 
@@ -90,11 +91,11 @@ abstract class RouteStyle {
 }
 
 class TrailStyle extends RouteStyle {
-  colors: [string, string];
+  colors: [[string, string], [string, string]];
   dashDist: number;
   spaceDist: number;
 
-  constructor(colors: [string, string]) {
+  constructor(colors: [[string, string], [string, string]]) {
     super();
     this.colors = colors;
     this.dashDist = 8;
@@ -106,14 +107,15 @@ class TrailStyle extends RouteStyle {
     ctx: CanvasRenderingContext2D,
     innerRadius: number,
     outerRadius: number,
+    active: boolean,
     lonLatToCanvas: (cord: [number, number]) => [number, number]
   ): void {
     ctx.lineWidth = outerRadius;
-    ctx.strokeStyle = this.colors[1];
+    ctx.strokeStyle = this.colors[active ? 1:0][1];
     ctx.setLineDash([]);
     this.drawLines(route, ctx, lonLatToCanvas);
     ctx.lineWidth = innerRadius;
-    ctx.strokeStyle = this.colors[0];
+    ctx.strokeStyle = this.colors[active ? 1:0][0];
     ctx.setLineDash([this.dashDist, this.spaceDist]);
     this.drawLines(route, ctx, lonLatToCanvas);
     ctx.setLineDash([]);
@@ -130,7 +132,7 @@ const MIN_FEATURE_ZOOM = 12;
 
 interface MapAppOptions {
   trailWidthCoeff: number;
-  trailColors: [string, string];
+  trailColors: [[string, string], [string, string]];
   zoomCoeff: number;
 }
 
@@ -167,6 +169,8 @@ class MapApp {
   // features loaded
   features: FeatureEntrySet;
   featureDB: FeatureDatabase;
+
+  activeFeatureId: number;
 
   // should the longitude / latitude marks + scale be displayed
   showDecorators: boolean;
@@ -205,6 +209,7 @@ class MapApp {
     this.canvas.addEventListener('mouseleave', (e: MouseEvent) => { this.mouseup(e); });
     this.canvas.addEventListener('mousemove', (e: MouseEvent) => { this.mousemove(e); });
     this.canvas.addEventListener('wheel', (e: WheelEvent) => { this.wheel(e); });
+    this.canvas.addEventListener('click', (e: MouseEvent) => this.mouseclick(e));
 
     this.margin = showDecorators ? MARGINS : [[0, 0], [0, 0]];
     this.showDecorators = showDecorators;
@@ -212,6 +217,7 @@ class MapApp {
     this.tileFeaturesLoaded = new Set();
     this.featureDB = new FeatureDatabase();
     this.featureDB.clear();
+    this.activeFeatureId = -1;
 
     this.features = new FeatureEntrySet();
 
@@ -260,10 +266,13 @@ class MapApp {
 
   mouseup(e: MouseEvent) {
     this.mouseClicked = false;
+  }
+
+  mouseclick(e: MouseEvent) {
     // if mouse was not moved (the user clicked on the map),
     // look for features to select
     if(!this.mouseMoved) {
-      this.clickFeature();
+      this.clickFeature(e);
     }
   }
 
@@ -309,6 +318,33 @@ class MapApp {
     this.run();
   }
 
+  // get mouse position as coordinate
+  private getMouseCoordinate(e: MouseEvent): [number, number] {
+    const pos = this.mousePos(e.pageX, e.pageY);
+    return this.view.getCoordinate(...pos);
+  }
+
+  // get current zoom level
+  private getZoom(): number {
+    return this.view.tileZoomLevel(...this.viewSize(), 256);
+  }
+
+  // check if a feature was clicked
+  private clickFeature(e: MouseEvent) {
+    const coord = this.getMouseCoordinate(e);
+    const [feature, dist] = this.features.closestFeature(coord);
+
+    const distThreshold = 0.0003 * Math.pow(2.0, 16 - this.getZoom());
+
+    if(dist < distThreshold) {
+      this.activeFeatureId = feature.id;
+      //alert(feature.name);
+    } else {
+      this.activeFeatureId = -1;
+    }
+    this.run();
+  }
+
   // load features into database for current view
   private loadFeaturesDB() {
     // get the set of necessary tiles to load features for
@@ -322,14 +358,12 @@ class MapApp {
       });
       this.tileFeaturesLoaded.add(tile);
     });
-
-
   }
 
   // find features in view and draw
   // this will not use any previously loaded features
   private runNewFeatures() {
-    const zoom = this.view.tileZoomLevel(this.viewSize()[0], this.viewSize()[1], 256);
+    const zoom = this.getZoom();
     if (zoom >= MIN_FEATURE_ZOOM) {
       this.featureDB.featuresInView(this.view, new FeatureEntrySet()).then((features) => {
         this.features = features;
@@ -344,7 +378,7 @@ class MapApp {
   // load trails, features, and declination for the current viewport
   private loadFeatures() {
     // select features possibly in view from DB
-    const zoom = this.view.tileZoomLevel(this.viewSize()[0], this.viewSize()[1], 256);
+    const zoom = this.getZoom();
     if (zoom >= MIN_FEATURE_ZOOM) {
       this.loadFeaturesDB();
       this.featureDB.featuresInView(this.view, this.features).then((features) => {
@@ -383,7 +417,7 @@ class MapApp {
 
   private loadTiles() {
     for (let l = 0; l < this.layers.length; l++) {
-      const zoom = this.view.tileZoomLevel(this.viewSize()[0], this.viewSize()[1], this.layers[l].tileSize);
+      const zoom = this.getZoom();
       this.layers[l].tiles.loadNew(this.view, zoom);
     }
     this.timeoutLoadFeatures();
@@ -636,7 +670,7 @@ class MapApp {
   }
 
   private drawFeatures() {
-    const zoom = this.view.tileZoomLevelRaw(...this.viewSize(), 256);
+    const zoom = this.getZoom();
     const widths = zoom >= 18 ? [9, 4.5] :
       zoom >= 16 ? [5, 2] :
         zoom >= 15 ? [3, 2] :
@@ -650,6 +684,7 @@ class MapApp {
           this.ctx,
           widths[1] * this.options.trailWidthCoeff,
           widths[0] * this.options.trailWidthCoeff,
+          f.id === this.activeFeatureId,
           (cord: [number, number]) => this.lonLatToCanvasXY(cord)
         );
       }
@@ -721,7 +756,7 @@ window.onload = function () {
     true,
     {
       trailWidthCoeff: 1.0,
-      trailColors: ["#003300", "#00ff00"],
+      trailColors: [["#003300", "#00ff00"], ["#ff0000", "#ffaa00"]],
       zoomCoeff: 1.0
     },
     /*new Viewport(
