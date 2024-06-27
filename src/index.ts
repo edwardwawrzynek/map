@@ -118,10 +118,14 @@ class Path {
     }
   }
 
+  // distance between points
+  private static dist(p0: [number, number], p1: [number, number]): number {
+    return Math.sqrt(Math.pow(p0[0] - p1[0], 2) + Math.pow(p0[1] - p1[1], 2));
+  }
+
   // check if two points are the same
   private static pointsEqual(p0: [number, number], p1: [number, number]): boolean {
-    const dist = Math.sqrt(Math.pow(p0[0] - p1[0], 2) + Math.pow(p0[1] - p1[1], 2));
-    return dist < 1e-5;
+    return Path.dist(p0, p1) < 1e-5;
   }
 
   // find the index of the waypoint on the route closest to pt, and if that point is the same as pt
@@ -130,7 +134,7 @@ class Path {
     let minIndex = -1;
     for(let i = 0; i < pt.trail.route.length; i++) {
       const iPt = pt.trail.route[i];
-      const dist = Math.sqrt(Math.pow(pt.pt[0] - iPt[0], 2) + Math.pow(pt.pt[1] - iPt[1], 2));
+      const dist = Path.dist(iPt, pt.pt);
       if(dist < minDist) {
         minDist = dist;
         minIndex = i;
@@ -145,19 +149,26 @@ class Path {
     let route: [number, number][] = [];
 
     // find indexes of points
-    // TODO: don't overshoot/undershoot start/end
-    const startIndex = Path.routePointIndex(start);
-    const endIndex = Path.routePointIndex(end);
+    let startIndex = Path.routePointIndex(start);
+    let endIndex = Path.routePointIndex(end);
     if(startIndex === -1 || endIndex === -1) {
       return undefined;
     }
 
     if(startIndex === endIndex) {
       // start and end are the same point, so we went nowhere
-      return [];
+      return [end.pt];
     }
-    // go the appropriate direction from start
+    // determine direction of travel
     const dir = (endIndex - startIndex) / Math.abs(endIndex - startIndex);
+    // refine start and end waypoints to avoid doubling back
+    if(Path.dist(start.pt, start.trail.route[startIndex + dir]) < Path.dist(start.trail.route[startIndex], start.trail.route[startIndex + dir])) {
+      startIndex += dir;
+    }
+    if(Path.dist(end.pt, start.trail.route[endIndex - dir]) < Path.dist(start.trail.route[endIndex], start.trail.route[endIndex - dir])) {
+      endIndex -= dir;
+    }
+
     for(let i = startIndex; i != endIndex; i+= dir) {
       route.push(start.trail.route[i]);
     }
