@@ -83,9 +83,8 @@ export function coordDistMiles(c0: [number, number], c1: [number, number]): numb
   return d;
 }
 
-// get distance from point segment to line
-// distance is in screen coordinate space, which is not physically meaningful
-export function distanceToLine(point: [number, number], endpoint1: [number, number], endpoint2: [number, number]) {
+// get point on line (endpoint1, endpoint2) closest to given point
+export function closestOnLine(point: [number, number], endpoint1: [number, number], endpoint2: [number, number]): [[number, number], number] {
   const [x,y] = point;
   const [x1,y1] = endpoint1;
   const [x2,y2] = endpoint2;
@@ -118,7 +117,15 @@ export function distanceToLine(point: [number, number], endpoint1: [number, numb
 
   const dx = x - xx;
   const dy = y - yy;
-  return Math.sqrt(dx * dx + dy * dy);
+
+  return [[xx, yy], Math.sqrt(dx * dx + dy * dy)];
+}
+
+// get distance from point segment to line
+// distance is in screen coordinate space, which is not physically meaningful
+export function distanceToLine(point: [number, number], endpoint1: [number, number], endpoint2: [number, number]): number {
+  const [[xx, yy], dist] = closestOnLine(point, endpoint1, endpoint2);
+  return dist;
 } 
 
 // convert a decimal longitude/latiude to degrees, minutes, and seconds
@@ -856,9 +863,16 @@ export class FeatureEntrySet {
           feature = f;
         }
       }
+      // TODO: other features
     });
 
     return [feature, dist];
+  }
+
+  // find the closest trail to the given point
+  closestTrail(coord: [number, number]): [TrailEntry, number] {
+    // TODO: only return trails
+    return this.closestFeature(coord) as [TrailEntry, number];
   }
 }
 

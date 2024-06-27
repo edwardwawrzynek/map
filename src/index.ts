@@ -1,14 +1,22 @@
-import { decimalToDMS, DMSToDecimal, encodeTile, FeatureEntry, FeatureEntrySet, formatDegrees, formatDegreesComponents, MAX_ZOOM_DATA_SPLIT, MAX_ZOOM_ENCODE, mod, Route, TileCoordinate, TileSetBuffer, TrailEntry, Viewport } from './util';
+import { closestOnLine, decimalToDMS, DMSToDecimal, encodeTile, FeatureEntry, FeatureEntrySet, formatDegrees, formatDegreesComponents, MAX_ZOOM_DATA_SPLIT, MAX_ZOOM_ENCODE, mod, Route, TileCoordinate, TileSetBuffer, TrailEntry, Viewport } from './util';
 import oboe from 'oboe';
 import Dexie, { DexieOptions } from 'dexie';
 import './style.css';
 import trails from "./trails.hessie.json";
+
+// distance threshold for trails to be considered intersecting
+const TRAIL_INTERSECTION_THRESH = 2e-4;
 
 // get magnetic declination for a given location
 // (uses NOAA NCEI api)
 function getDeclination(lon: number, lat: number, callback: (decl: number) => void) {
   fetch(`https://www.ngdc.noaa.gov/geomag-web/calculators/calculateDeclination?lat1=${lat}&lon1=${lon}&key=zNEw7&resultFormat=json`).then(res => res.json()).then(data => callback(data.result[0].declination));
 }
+
+interface TrailPoint {
+  trail: TrailEntry,
+  pt: [number, number]
+};
 
 // feature database handles adding and looking up features in a given area
 class FeatureDatabase extends Dexie {
@@ -86,19 +94,143 @@ class Path {
     this.route = [];
   }
 
+  // find the on-trail point closest to the given point
+  // or the point if no trail is within threshold
+  private static nearestPoint(point: [number, number], features: FeatureEntrySet, distThreshold?: number): TrailPoint {
+    const [feature, dist] = features.closestTrail(point);
+
+    let closest = point;
+    let minDist = 1e100;
+    if(feature.type == "trail") {
+      for(let i = 1; i < feature.route.length; i++) {
+        const [pt, dist] = closestOnLine(point, feature.route[i-1], feature.route[i]);
+        if(dist < minDist) {
+          minDist = dist;
+          closest = pt;
+        }
+      }
+    }
+
+    if(distThreshold === undefined || minDist < distThreshold) {
+      return {trail: feature, pt: closest};
+    } else {
+      return {trail: undefined, pt: point};
+    }
+  }
+
+  // check if two points are the same
+  private static pointsEqual(p0: [number, number], p1: [number, number]): boolean {
+    const dist = Math.sqrt(Math.pow(p0[0] - p1[0], 2) + Math.pow(p0[1] - p1[1], 2));
+    return dist < 1e-5;
+  }
+
+  // find the index of the waypoint on the route closest to pt, and if that point is the same as pt
+  private static routePointIndex(pt: TrailPoint): number {
+    let minDist = 1e100;
+    let minIndex = -1;
+    for(let i = 0; i < pt.trail.route.length; i++) {
+      const iPt = pt.trail.route[i];
+      const dist = Math.sqrt(Math.pow(pt.pt[0] - iPt[0], 2) + Math.pow(pt.pt[1] - iPt[1], 2));
+      if(dist < minDist) {
+        minDist = dist;
+        minIndex = i;
+      }
+    }
+
+    return minIndex;
+  }
+
+  // get a route between points on the same feature
+  private static routeOnTrail(start: TrailPoint, end: TrailPoint): [number, number][] {
+    let route: [number, number][] = [];
+
+    // find indexes of points
+    // TODO: don't overshoot/undershoot start/end
+    const startIndex = Path.routePointIndex(start);
+    const endIndex = Path.routePointIndex(end);
+    if(startIndex === -1 || endIndex === -1) {
+      return undefined;
+    }
+
+    if(startIndex === endIndex) {
+      // start and end are the same point, so we went nowhere
+      return [];
+    }
+    // go the appropriate direction from start
+    const dir = (endIndex - startIndex) / Math.abs(endIndex - startIndex);
+    for(let i = startIndex; i != endIndex; i+= dir) {
+      route.push(start.trail.route[i]);
+    }
+    const endWaypoint = start.trail.route[endIndex];
+    route.push(endWaypoint);
+    if(!Path.pointsEqual(endWaypoint, end.pt)) {
+      route.push(end.pt);
+    }
+
+    return route;
+  }
+
+  // find the shortest route between points
+  private static findRoute(start: TrailPoint, end: TrailPoint, features: FeatureEntrySet): [number, number][] {
+    const route: [number, number][] = [];
+
+    // base case: start and end are on the same trail
+    if(start.trail.id === end.trail.id) {
+      console.log("SAME TRAIL");
+      return this.routeOnTrail(start, end);
+    }
+
+    return route;
+  }
+
   // add a new point to the path
-  addPoint(point: PathPoint) {
-    this.points.push(point);
+  addPoint(point: PathPoint, features: FeatureEntrySet, distThreshold: number) {
     // if this is a straight line path, simply add the point to route
     if(!point.followFeatures) {
+      this.points.push(point);
       this.route.push(point.coord);
     }
     // otherwise, find the shortest path along features
     else {
-      // TODO??
-    }
+      // if this is the first point, put it at the nearest trail
+      if(this.points.length === 0) {
+        const trailPoint = Path.nearestPoint(point.coord, features, distThreshold);
+        this.points.push({coord: trailPoint.pt, followFeatures: true});
+        this.route.push(trailPoint.pt);
+      }
+      // otherwise, attempt to follow trails from previous point
+      else {
+        // previous point
+        const prevPoint = this.points[this.points.length - 1];
+        // get closest trail point to previous
+        const startPoint = Path.nearestPoint(prevPoint.coord, features, undefined);
+        // get ending point
+        const endPoint = Path.nearestPoint(point.coord, features, distThreshold);
+        // if ending point is not on trail, don't find route
+        if(endPoint.trail === undefined) {
+          this.points.push({coord: endPoint.pt, followFeatures: true});
+          this.route.push(endPoint.pt);
+          return;
+        }
+        // both start and end are on a trail, find a route between them
+        const shortRoute = Path.findRoute(startPoint, endPoint, features);
+        // if we didn't find a route, use straight line
+        if(shortRoute === undefined) {
+          this.points.push({coord: endPoint.pt, followFeatures: true});
+          this.route.push(endPoint.pt);
+          return;
+        }
+        // otherwise, add the found route
+        if(!Path.pointsEqual(prevPoint.coord, startPoint.pt)) {
+          this.route.push(startPoint.pt);
+        }
 
-    console.log(this.points);
+        shortRoute.forEach((pt) => this.route.push(pt));
+
+        this.points.push({coord: endPoint.pt, followFeatures: true});
+        this.route.push(endPoint.pt);
+      }
+    }
   }
 
   // remove the last point on the path
@@ -463,14 +595,17 @@ class MapApp {
     return this.view.tileZoomLevel(...this.viewSize(), 256);
   }
 
+  // get distance threshold for click to be considered on feature
+  private clickDistanceThreshold(): number {
+    return 0.0003 * Math.pow(2.0, 16 - this.getZoom());
+  }
+
   // check if a feature was clicked and select it if so
   private clickFeature(e: MouseEvent) {
     const coord = this.getMouseCoordinate(e);
     const [feature, dist] = this.features.closestFeature(coord);
 
-    const distThreshold = 0.0003 * Math.pow(2.0, 16 - this.getZoom());
-
-    if(dist < distThreshold) {
+    if(dist < this.clickDistanceThreshold()) {
       this.activeFeatureId = feature.id;
       //alert(feature.name);
     } else {
@@ -483,7 +618,7 @@ class MapApp {
   private clickMeasure(e: MouseEvent) {
     const coord = this.getMouseCoordinate(e);
 
-    this.currentPath.addPoint({coord, followFeatures: false});
+    this.currentPath.addPoint({coord, followFeatures: true}, this.features, 2.0 * this.clickDistanceThreshold());
     this.run();
   }
 
@@ -885,7 +1020,6 @@ class MapApp {
     this.ctx.globalAlpha = 1.0;
     this.drawFeatures();
     if(this.mode === AppMode.Measure) {
-      console.log(this.currentPath);
       this.drawPath(this.currentPath);
     }
 
@@ -927,10 +1061,7 @@ window.onload = function () {
   app = new MapApp(
     canvas,
     [
-      { url: URLS[0], tileSize: 256, opacity: 1.0 },
-      { url: URLS[6], tileSize: 256, opacity: 1.0 },
-      { url: URLS[5], tileSize: 256, opacity: 0.15 },
-      //{ url: URLS[13], tileSize: 512, opacity: 0.5 }
+      { url: URLS[10], tileSize: 256, opacity: 1.0 },
     ],
     true,
     {
