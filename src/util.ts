@@ -83,6 +83,16 @@ export function coordDistMiles(c0: [number, number], c1: [number, number]): numb
   return d;
 }
 
+// Get the length of a route (in miles)
+export function routeLengthMiles(route: [number, number][]): number {
+  let len = 0;
+  for(let i = 1; i < route.length; i++) {
+    len += coordDistMiles(route[i-1], route[i]);
+  }
+
+  return len;
+}
+
 // get point on line (endpoint1, endpoint2) closest to given point
 export function closestOnLine(point: [number, number], endpoint1: [number, number], endpoint2: [number, number]): [[number, number], number] {
   const [x,y] = point;
@@ -847,12 +857,12 @@ export class FeatureEntrySet {
 
   // find the closest feature to the given point
   // return the feature and distance in coordinate distance
-  closestFeature(coord: [number, number]): [FeatureEntry, number] {
+  closestFeature(coord: [number, number], excludeId?: number): [FeatureEntry, number] {
     let feature: FeatureEntry;
     let dist = 1e100;
 
     this.forEach((f) => {
-      if(f.type == "trail") {
+      if(f.type === "trail" && f.id !== excludeId) {
         let minDist = 1e100;
         for(let i = 1; i < f.route.length; i++) {
           minDist = Math.min(minDist, distanceToLine(coord, f.route[i-1], f.route[i]));
@@ -870,9 +880,19 @@ export class FeatureEntrySet {
   }
 
   // find the closest trail to the given point
-  closestTrail(coord: [number, number]): [TrailEntry, number] {
+  closestTrail(coord: [number, number], excludeId?: number): [TrailEntry, number] {
     // TODO: only return trails
-    return this.closestFeature(coord) as [TrailEntry, number];
+    return this.closestFeature(coord, excludeId) as [TrailEntry, number];
+  }
+
+  // find trail by id
+  findTrail(id: number): TrailEntry {
+    for(let i = 0; i < this.visibleFeatures.length; i++) {
+      const feat = this.visibleFeatures[i];
+      if(feat.id === id && feat.type === "trail") {
+        return feat;
+      }
+    }
   }
 }
 

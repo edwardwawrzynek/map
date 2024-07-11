@@ -1,4 +1,4 @@
-import { closestOnLine, decimalToDMS, DMSToDecimal, encodeTile, FeatureEntry, FeatureEntrySet, formatDegrees, formatDegreesComponents, MAX_ZOOM_DATA_SPLIT, MAX_ZOOM_ENCODE, mod, Route, TileCoordinate, TileSetBuffer, TrailEntry, Viewport } from './util';
+import { closestOnLine, decimalToDMS, DMSToDecimal, encodeTile, FeatureEntry, FeatureEntrySet, formatDegrees, formatDegreesComponents, MAX_ZOOM_DATA_SPLIT, MAX_ZOOM_ENCODE, mod, Route, routeLengthMiles, TileCoordinate, TileSetBuffer, TrailEntry, Viewport } from './util';
 import oboe from 'oboe';
 import Dexie, { DexieOptions } from 'dexie';
 import './style.css';
@@ -6,6 +6,9 @@ import trails from "./trails.hessie.json";
 
 // distance threshold for trails to be considered intersecting
 const TRAIL_INTERSECTION_THRESH = 2e-4;
+
+// number of intersections to consider when route finding
+const ROUTE_FINDING_DEPTH = 8;
 
 // get magnetic declination for a given location
 // (uses NOAA NCEI api)
@@ -81,6 +84,13 @@ interface PathPoint {
   coord: [number, number];
   // whether to follow features from this to the next point
   followFeatures: boolean;
+};
+
+// a trail intersection point
+interface Intersection {
+  point: [number, number];
+  trail0Id: number;
+  trail1Id: number;
 };
 
 class Path {
@@ -181,17 +191,123 @@ class Path {
     return route;
   }
 
+  // find all intersections between id0 and id1
+  private static matchIntersect(intersect: Intersection[], id0: number, id1: number): Intersection[] {
+    return intersect.filter((i) => (i.trail0Id === id0 && i.trail1Id === id1) || (i.trail1Id === id0 && i.trail0Id === id1));
+  }
+
+  // matching all intersections containing id, and return the set of matching and not matching intersections
+  private static splitIntersects(intersect: Intersection[], id: number): [Intersection[], Intersection[]] {
+    let match: Intersection[] = [];
+    let noMatch: Intersection[] = [];
+
+    intersect.forEach((i) => {
+      if(i.trail0Id === id || i.trail1Id === id) {
+        match.push(i);
+      } else {
+        noMatch.push(i);
+      }
+    })
+
+    return [match, noMatch];
+  }
+
+  // return all trail intersections between trails in features
+  private static findTrailIntersections(features: FeatureEntrySet): Intersection[] {
+    let intersect: Intersection[] = [];
+
+    features.forEach((feature) => {
+      if(feature.type === "trail") {
+        const startPoint = feature.route[0];
+        const endPoint = feature.route[feature.route.length - 1];
+        // check if any other trail is near the endpoints of the route
+        const [start, startDist] = features.closestTrail(startPoint, feature.id);
+        const [end, endDist] = features.closestTrail(endPoint, feature.id);
+
+        if(startDist < TRAIL_INTERSECTION_THRESH) {
+          if(!Path.matchIntersect(intersect, feature.id, start.id).some((i) => Path.dist(i.point, startPoint) < TRAIL_INTERSECTION_THRESH)) {
+            intersect.push({
+              point: startPoint,
+              trail0Id: feature.id,
+              trail1Id: start.id
+            });
+          }
+        }
+        if(endDist < TRAIL_INTERSECTION_THRESH) {
+          if(!Path.matchIntersect(intersect, feature.id, end.id).some((i) => Path.dist(i.point, endPoint) < TRAIL_INTERSECTION_THRESH)) {
+            intersect.push({
+              point: endPoint,
+              trail0Id: feature.id,
+              trail1Id: end.id
+            });
+          }
+        }
+      }
+    });
+
+    return intersect;
+  }
+
+  // recursive route finding step
+  private static findRouteStep(start: TrailPoint, end: TrailPoint, intersects: Intersection[], features: FeatureEntrySet, depth: number): [number, number][] {
+    // base case: same trail
+    if(start.trail.id === end.trail.id) {
+      return this.routeOnTrail(start, end);
+    }
+    // if we reached max search depth, terminate
+    if(depth === 0) {
+      return undefined;
+    }
+    // otherwise: look for route
+    let routes: [number, number][][] = [];
+    // follow all intersections
+    const [jcts, jctsRemain] = Path.splitIntersects(intersects, start.trail.id);
+    for(let i = 0; i < jcts.length; i++) {
+      const jct = jcts[i];
+      // route along current trail to junction
+      const jctPt = {pt: jct.point, trail: start.trail};
+      const route = this.routeOnTrail(start, jctPt);
+      // select other trail in junction to follow
+      const nextTrailId = jct.trail0Id === start.trail.id ? jct.trail1Id : jct.trail0Id;
+      const nextStart = {pt: jct.point, trail: features.findTrail(nextTrailId)};
+      // search from next junction
+      const nextRoute = this.findRouteStep(nextStart, end, jctsRemain, features, depth - 1);
+      if(nextRoute !== undefined) {
+        routes.push(route.concat(nextRoute));
+      }
+    };
+    // choose shortest route
+    if(routes.length > 0) {
+      let minDist = routeLengthMiles(routes[0]);
+      let minDistI = 0;
+      for(let i = 1; i < routes.length; i++) {
+        const dist = routeLengthMiles(routes[i]);
+        if(dist < minDist) {
+          minDist = dist;
+          minDistI = i;
+        }
+      }
+
+      return routes[minDistI];
+    }
+    return undefined;
+  }
+
   // find the shortest route between points
   private static findRoute(start: TrailPoint, end: TrailPoint, features: FeatureEntrySet): [number, number][] {
     const route: [number, number][] = [];
 
-    // base case: start and end are on the same trail
+    // quick case: start and end are on the same trail
     if(start.trail.id === end.trail.id) {
       console.log("SAME TRAIL");
       return this.routeOnTrail(start, end);
     }
 
-    return route;
+    // not the same trail, so we need to do route finding
+    // find all trail intersections
+    const intersect = Path.findTrailIntersections(features);
+
+    return Path.findRouteStep(start, end, intersect, features, ROUTE_FINDING_DEPTH);
   }
 
   // add a new point to the path
@@ -344,6 +460,24 @@ class TrailStyle extends RouteStyle {
     ctx.setLineDash([this.dashDist, this.spaceDist]);
     this.drawLines(route, ctx, lonLatToCanvas);
     ctx.setLineDash([]);
+
+    let [x,y] = lonLatToCanvas(route[0]);
+    ctx.fillStyle = "#ff0000";
+    ctx.strokeStyle = "#ff0000";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(x, y, 2, 0, 2*Math.PI);
+    ctx.stroke();
+    ctx.fill();
+
+    [x,y] = lonLatToCanvas(route[route.length - 1]);
+    ctx.fillStyle = "#ff0000";
+    ctx.strokeStyle = "#ff0000";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(x, y, 2, 0, 2*Math.PI);
+    ctx.stroke();
+    ctx.fill();
   }
 }
 
